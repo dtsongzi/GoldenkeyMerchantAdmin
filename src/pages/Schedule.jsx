@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Select, Checkbox, Space, Tag, Typography, Modal, TimePicker, DatePicker as AntDatePicker, App as AntApp } from 'antd';
+import { Button, Select, Checkbox, Space, Tag, Typography, Modal, TimePicker, DatePicker as AntDatePicker, Input, App as AntApp } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api, currentUser } from '../api.js';
@@ -50,6 +50,7 @@ function baseDraft(b) {
   const [start, end] = blockHours(b);
   return {
     uid: uidOf(b), id: b.id, kind: b.kind, teacherId: b.teacher_id ?? null,
+    classroomId: b.classroom_id ?? null,
     start, end, deleted: false, changed: false,
   };
 }
@@ -80,12 +81,13 @@ function computeWidths(days, blocks, defaultTeacherId) {
 
 // ---------- 课程表网格（主表 / 预览复用） ----------
 function ScheduleGrid({
-  days, blocks, canModify, drafts = {}, selection, defaultTeacherId,
+  days, blocks, canModify, drafts = {}, selection, defaultTeacherId, classrooms = [],
   onBlockClick, onResizeStart, onDelete, onRestore, onLanePointerDown,
   scrollRef, selected, onSelectDay, onScroll,
 }) {
   const widths = computeWidths(days, blocks, defaultTeacherId);
   const totalWidth = widths.reduce((a, b) => a + b, 0);
+  const roomName = (id) => (classrooms.find((r) => String(r.id) === String(id)) || {}).name || '';
 
   const renderBlock = (b) => {
     const uid = uidOf(b);
@@ -98,6 +100,9 @@ function ScheduleGrid({
     const deleted = !!dft?.deleted;
     const changed = !!dft?.changed && !deleted;
     const mod = !deleted && (canModify ? canModify(b) : false);
+    const roomLabel = dft && dft.classroomId !== undefined && dft.classroomId !== (b.classroom_id ?? null)
+      ? roomName(dft.classroomId)
+      : (b.classroom_name || roomName(dft?.classroomId) || '');
     const cls = [
       'block',
       isBook ? 'book' : isNew ? 'new' : 'avail',
@@ -107,7 +112,7 @@ function ScheduleGrid({
       <div key={uid} className={cls} style={{ top, height: h }}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={() => mod && !isBook && onBlockClick && onBlockClick(b)}
-        title={`${hhmm(st)}-${hhmm(en)} ${b.teacher_name || ''} ${b.course_title || ''} ${b.member_name || ''}${deleted ? '（已标记删除，点「保存全部」生效）' : ''}`}>
+        title={`${hhmm(st)}-${hhmm(en)} ${b.teacher_name || ''} ${roomLabel} ${b.course_title || ''} ${b.member_name || ''}${deleted ? '（已标记删除，点「保存全部」生效）' : ''}`}>
         {deleted ? (
           <span className="block-undo" role="button" title="撤销删除"
             onPointerDown={(e) => e.stopPropagation()}
@@ -122,6 +127,7 @@ function ScheduleGrid({
           {deleted && ' · 将删除'}
           {changed && ' · 已改'}
         </div>
+        {roomLabel && <div className="block-room">{roomLabel}</div>}
         {(isNew || changed) && <div className="block-course">{hhmm(st)}-{hhmm(en)}</div>}
         {b.course_title && <div className="block-course">{b.course_title}</div>}
         {b.member_name && <div className="block-member">{b.member_name}</div>}
@@ -201,6 +207,7 @@ export default function Schedule({ user }) {
   const [selected, setSelected] = useState(fmt(today));
   const [teacherId, setTeacherId] = useState(isAdmin ? '' : String(myTeacherId));
   const [teachers, setTeachers] = useState([]);
+  const [classrooms, setClassrooms] = useState([]);
   const [blocks, setBlocks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editor, setEditor] = useState(null);
@@ -214,6 +221,8 @@ export default function Schedule({ user }) {
   const [selection, setSelection] = useState(null);   // 拖动过程中的实时选区
   const [quick, setQuick] = useState({ startDate: fmt(today), endDate: fmt(addDays(today, 14)), startHour: '10:00', endHour: '21:00', weekdaysOnly: false, msg: '' });
   const [preview, setPreview] = useState(null);
+  const [roomMgr, setRoomMgr] = useState(false);       // 教室管理弹窗
+  const [newRoomName, setNewRoomName] = useState('');
 
   const scrollRef = useRef(null);
   const dragRef = useRef(null);
@@ -224,6 +233,7 @@ export default function Schedule({ user }) {
 
   const effTeacher = isAdmin ? (teacherId || '') : String(myTeacherId);
   const defaultTeacherId = effTeacher ? Number(effTeacher) : (teachers[0]?.id ?? null);
+  const defaultRoomId = classrooms[0]?.id ?? null;
 
   // 草稿写入统一走这里：ref 与 state 同步，避免多次拖动之间读到旧值
   const setAllDrafts = (next) => { draftsRef.current = next; setDrafts(next); };
@@ -252,6 +262,7 @@ export default function Schedule({ user }) {
       .then(setBlocks).catch(() => setBlocks([])).finally(() => setLoading(false));
   };
   useEffect(() => { api.teachers().then(setTeachers).catch(() => {}); }, []);
+  useEffect(() => { api.classrooms().then(setClassrooms).catch(() => {}); }, []);
   useEffect(() => { resetDrafts(); load(); /* eslint-disable-next-line */ }, [windowStart, effTeacher]);
 
   // 网格实际渲染的块 = 数据库块（含删除标记）+ 新增草稿块
@@ -291,14 +302,15 @@ export default function Schedule({ user }) {
   const openEditor = (b) => {
     if (b.kind === 'new') { setActiveCid(b.cid); return; }   // 新增块用上方草稿条编辑
     const d = draftsRef.current[uidOf(b)] || baseDraft(b);
-    setEditor({ uid: uidOf(b), b, start: d.start, end: d.end, teacherId: d.teacherId ?? '', dirty: false });
+    setEditor({ uid: uidOf(b), b, start: d.start, end: d.end, teacherId: d.teacherId ?? '', classroomId: d.classroomId ?? '', dirty: false });
   };
   const stageEditor = () => {
     if (!editor) return;
     if (editor.end <= editor.start) { message.warning('结束时间需晚于开始时间'); return; }
     patchDraft(editor.b, (d) => ({
       ...d, start: editor.start, end: editor.end,
-      teacherId: editor.teacherId || null, changed: true, deleted: false,
+      teacherId: editor.teacherId || null, classroomId: editor.classroomId || null,
+      changed: true, deleted: false,
     }));
     setEditor(null);
     message.info('已记入草稿，点击「保存全部」后生效');
@@ -407,6 +419,7 @@ export default function Schedule({ user }) {
         cid, id: cid, kind: 'new', slot_date: v.date, start: v.start, end: v.end,
         lane_key: v.laneKey,
         teacher_id: isTeacher ? myTeacherId : (v.teacherId ?? null), teacher_name: '',
+        classroom_id: defaultRoomId, classroom_name: classrooms.find((r) => r.id === defaultRoomId)?.name || '',
         course_title: null, member_name: null,
       }]);
       setActiveCid(cid);
@@ -427,26 +440,67 @@ export default function Schedule({ user }) {
   const createCount = creates.length;
   const pendingCount = changeCount + deleteCount + createCount;
 
+  // 本地预估：保存后会覆盖掉多少个「已有可约块」（后端还会额外排除已被学员预约的）
+  const overwritePreview = (() => {
+    const items = [];
+    draftList.forEach((d) => {
+      if (d.deleted || !d.changed) return;
+      const b = blocks.find((x) => uidOf(x) === d.uid);
+      if (b && b.kind === 'avail') {
+        items.push({ uid: d.uid, date: b.slot_date, start: d.start, end: d.end, teacherId: d.teacherId, classroomId: d.classroomId });
+      }
+    });
+    creates.forEach((c) => items.push({
+      uid: c.cid, date: c.slot_date, start: c.start, end: c.end, teacherId: c.teacher_id, classroomId: c.classroom_id,
+    }));
+    const hit = new Set();
+    items.forEach((it) => {
+      blocks.forEach((b) => {
+        if (b.kind !== 'avail' || b.slot_date !== it.date) return;
+        const u = uidOf(b);
+        if (u === it.uid || drafts[u]?.deleted) return;
+        const [bs, be] = blockHours(b);
+        const sameTeacher = String(b.teacher_id) === String(it.teacherId);
+        const sameRoom = !!it.classroomId && String(b.classroom_id) === String(it.classroomId);
+        if (!sameTeacher && !sameRoom) return;
+        if (bs < it.end && be > it.start) hit.add(u);
+      });
+    });
+    return hit.size;
+  })();
+
   const saveAll = async () => {
     if (!pendingCount) return;
     const bad = creates.find((c) => c.end <= c.start || !c.teacher_id);
     if (bad) { message.warning('存在结束时间不合法或未指定教师的新增时段，请先修正'); setActiveCid(bad.cid); return; }
     setSaving(true);
     try {
+      let overwritten = 0, blocked = 0;
       for (const d of draftList.filter((x) => x.deleted)) {
         await api.deleteScheduleBlock(d.id, d.kind);
       }
+      // overwrite: true —— 拖动后的时段若盖住其他块，由后端删除被覆盖的块（已有学员预约的跳过）
       for (const d of draftList.filter((x) => x.changed && !x.deleted)) {
-        await api.updateScheduleBlock(d.id, {
-          start_time: toTimeStr(d.start), end_time: toTimeStr(d.end), teacher_id: d.teacherId || null,
+        const r = await api.updateScheduleBlock(d.id, {
+          start_time: toTimeStr(d.start), end_time: toTimeStr(d.end),
+          teacher_id: d.teacherId || null, classroom_id: d.classroomId || null, overwrite: true,
         });
+        overwritten += Number(r?.deleted || 0);
+        blocked += Number(r?.skipped || 0);
       }
       for (const c of creates) {
-        await api.createScheduleBlock({
-          slot_date: c.slot_date, start_time: toTimeStr(c.start), end_time: toTimeStr(c.end), teacher_id: c.teacher_id,
+        const r = await api.createScheduleBlock({
+          slot_date: c.slot_date, start_time: toTimeStr(c.start), end_time: toTimeStr(c.end),
+          teacher_id: c.teacher_id, classroom_id: c.classroom_id || null, overwrite: true,
         });
+        overwritten += Number(r?.deleted || 0);
+        blocked += Number(r?.skipped || 0);
       }
-      message.success(`已保存：新增 ${createCount} / 修改 ${changeCount} / 删除 ${deleteCount}`);
+      message.success(
+        `已保存：新增 ${createCount} / 修改 ${changeCount} / 删除 ${deleteCount}` +
+        (overwritten ? `，覆盖删除 ${overwritten} 个原时段` : '') +
+        (blocked ? `；${blocked} 个已有学员预约的时段未被覆盖` : '')
+      );
       resetDrafts();
       load();
     } catch (e) {
@@ -494,6 +548,27 @@ export default function Schedule({ user }) {
   };
 
   const teacherOptions = teachers.map((t) => ({ value: t.id, label: t.name }));
+  const roomOptions = classrooms.filter((r) => r.status !== 0).map((r) => ({ value: r.id, label: r.name }));
+
+  // ---------- 教室管理 ----------
+  const reloadRooms = () => api.classrooms().then(setClassrooms).catch(() => {});
+  const addRoom = async () => {
+    const name = newRoomName.trim();
+    if (!name) return;
+    try {
+      await api.createClassroom({ name });
+      setNewRoomName('');
+      reloadRooms();
+      message.success('已添加教室');
+    } catch (e) { message.error(e.message); }
+  };
+  const removeRoom = async (r) => {
+    try {
+      await api.deleteClassroom(r.id);
+      reloadRooms();
+      message.success(`已删除「${r.name}」，相关排课的教室已清空`);
+    } catch (e) { message.error(e.message); }
+  };
 
   return (
     <>
@@ -532,6 +607,7 @@ export default function Schedule({ user }) {
         </div>
         <div style={{ alignSelf: 'end', display: 'flex', gap: 8 }}>
           <Button type="primary" onClick={buildPreview}>⚡ 快捷排课（预览）</Button>
+          <Button onClick={() => setRoomMgr(true)}>🏠 教室</Button>
           <Button onClick={() => api.downloadSchedule(quick.startDate, quick.endDate, effTeacher || undefined)}>⬇ 导出课表</Button>
         </div>
         {quick.msg && <div className="page-sub" style={{ margin: 0, gridColumn: '1 / -1' }}>{quick.msg}</div>}
@@ -567,6 +643,9 @@ export default function Schedule({ user }) {
           ) : (
             <Tag color="gold">{teacherName(activeCreate.teacher_id) || '本人'}</Tag>
           )}
+          <Select style={{ width: 130 }} value={activeCreate.classroom_id ?? undefined} placeholder="选择教室" allowClear
+            options={roomOptions}
+            onChange={(v) => updateCreate(activeCreate.cid, { classroom_id: v ?? null })} />
           <Button type="primary" size="small" onClick={() => setActiveCid(null)}>完成</Button>
           <Button size="small" danger onClick={() => markDelete({ kind: 'new', cid: activeCreate.cid })}>撤销新增</Button>
         </div>
@@ -576,6 +655,7 @@ export default function Schedule({ user }) {
       {pendingCount > 0 && (
         <div className="draft-bar">
           <span>待保存草稿：<b>{createCount}</b> 新增 / <b>{changeCount}</b> 修改 / <b>{deleteCount}</b> 删除 —— 目前<b>均未写入数据库</b></span>
+          {overwritePreview > 0 && <Tag color="volcano">将覆盖 {overwritePreview} 个已有时段（保存后删除，视为需重排）</Tag>}
           <Button type="primary" size="small" loading={saving} onClick={saveAll}>保存全部</Button>
           <Button size="small" onClick={resetDrafts}>撤销全部</Button>
         </div>
@@ -584,7 +664,7 @@ export default function Schedule({ user }) {
       {/* 主课程表 */}
       <ScheduleGrid
         days={days} blocks={displayBlocks} canModify={canModify} drafts={drafts}
-        selection={selection} defaultTeacherId={defaultTeacherId}
+        selection={selection} defaultTeacherId={defaultTeacherId} classrooms={classrooms}
         onBlockClick={openEditor} onResizeStart={startResize} onDelete={markDelete} onRestore={restore}
         onLanePointerDown={startSelect}
         scrollRef={scrollRef} selected={selected} onSelectDay={scrollToDay} onScroll={onScroll}
@@ -619,6 +699,10 @@ export default function Schedule({ user }) {
                   options={teacherOptions} onChange={(v) => setEditor({ ...editor, teacherId: v ?? '', dirty: true })} />
               </div>
             )}
+            <div className="field"><label>教室</label>
+              <Select style={{ width: '100%' }} allowClear placeholder="未指定教室" value={editor.classroomId || undefined}
+                options={roomOptions} onChange={(v) => setEditor({ ...editor, classroomId: v ?? '', dirty: true })} />
+            </div>
             <div className="field"><label>开始时间</label>
               <TimePicker style={{ width: '100%' }} format="HH:mm"
                 value={toDayjs(editor.start)}
@@ -634,6 +718,26 @@ export default function Schedule({ user }) {
             </Typography.Paragraph>
           </>
         )}
+      </Modal>
+      {/* 教室管理 */}
+      <Modal open={roomMgr} title="教室 / 琴房管理" footer={null} onCancel={() => setRoomMgr(false)}>
+        <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
+          <Input placeholder="新教室名称，如 琴房 D" value={newRoomName}
+            onChange={(e) => setNewRoomName(e.target.value)} onPressEnter={addRoom} />
+          <Button type="primary" onClick={addRoom}>添加</Button>
+        </Space.Compact>
+        {classrooms.length === 0 && (
+          <Typography.Paragraph type="secondary">还没有教室，先添加一间。</Typography.Paragraph>
+        )}
+        {classrooms.map((r) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #f0ece2' }}>
+            <span>{r.name}{Number(r.capacity) > 1 ? ` · 可容纳 ${r.capacity} 人` : ''}</span>
+            <Button size="small" type="text" danger onClick={() => removeRoom(r)}>删除</Button>
+          </div>
+        ))}
+        <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+          删除教室会把已有排课上的教室清空（课次本身保留）。
+        </Typography.Paragraph>
       </Modal>
     </>
   );

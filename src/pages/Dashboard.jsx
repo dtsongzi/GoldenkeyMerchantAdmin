@@ -99,13 +99,15 @@ export default function Dashboard({ user }) {
     { l: '可约时段', n: stats.availableSlots, to: '/schedule' },
   ];
   const opt = charts ? buildOptions(charts) : null;
-  const chartCards = [
+  // 注意：charts 可能尚未返回（或教师角色根本不请求图表），此时 opt 为 null
+  // 必须先判空再取字段，否则会抛 Cannot read properties of null (reading 'bookingOption')
+  const chartCards = opt ? [
     ['近 14 天预约趋势', opt.bookingOption, 240],
     ['近 14 天上课趋势', opt.recordOption, 240],
     ['预约状态分布', opt.statusOption, 220],
     ['各课程报名分布', opt.courseOption, 240],
     ['教师课时工作量', opt.teacherOption, 240],
-  ];
+  ] : [];
 
   return (
     <>
@@ -122,7 +124,7 @@ export default function Dashboard({ user }) {
         ))}
       </Row>
 
-      {role === 'admin' && charts && (
+      {role === 'admin' && (charts ? (
         <div className="chart-grid">
           {chartCards.map(([title, option, height]) => (
             <Card key={title} size="small" title={title} className="chart-card">
@@ -130,7 +132,11 @@ export default function Dashboard({ user }) {
             </Card>
           ))}
         </div>
-      )}
+      ) : (
+        <Card size="small" style={{ marginTop: 16 }}>
+          <Empty description="图表数据加载中…（若长时间空白，请确认后端 /api/admin/charts 正常）" />
+        </Card>
+      ))}
     </>
   );
 }

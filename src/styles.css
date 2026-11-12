@@ -152,6 +152,7 @@ button { font-family: inherit; cursor: pointer; }
 .block.deleted .block-undo { opacity: 1; }
 .block.editable { cursor: pointer; }
 .block-teacher { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.block-room { display: inline-block; max-width: 100%; margin-top: 1px; padding: 0 4px; border-radius: 3px; background: rgba(90,84,74,.12); font-size: 10px; line-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-course { opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-member { opacity: .7; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-handle { position: absolute; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 3; }

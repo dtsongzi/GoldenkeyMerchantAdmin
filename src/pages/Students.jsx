@@ -29,7 +29,8 @@ export default function Students({ user }) {
     { title: '姓名', dataIndex: 'name', key: 'name' },
     { title: '手机号', dataIndex: 'phone', key: 'phone', render: (v) => v || '-' },
     { title: '预约次数', dataIndex: 'booking_count', key: 'booking_count', render: (v) => v || 0 },
-    { title: '已完成课时', key: 'hours', render: (_, m) => `${(Number(m.completed_hours || (m.agg && m.agg.completed_hours) || 0)).toFixed(1)} h` },
+    { title: '已上课时', key: 'done_hours', render: (_, m) => <b style={{ color: '#2c6b48' }}>{Number(m.done_hours ?? m.record_count ?? 0)} 节</b> },
+    { title: '未上课时', key: 'upcoming_hours', render: (_, m) => <b style={{ color: '#a8843a' }}>{Number(m.upcoming_hours ?? 0)} 节</b> },
     { title: '注册时间', dataIndex: 'created_at', key: 'created_at', render: (v) => v || '-' },
   ];
 

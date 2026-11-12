@@ -77,6 +77,12 @@ export const api = {
   deleteScheduleBlock: (id, kind) => request(`/admin/schedule/${id}?kind=${kind || 'avail'}`, { method: 'DELETE' }),
   createScheduleBlock: (body) => request('/admin/schedule', { method: 'POST', body: JSON.stringify(body) }),
   quickSchedule: (body) => request('/admin/quick-schedule', { method: 'POST', body: JSON.stringify(body) }),
+
+  // 教室 / 琴房
+  classrooms: () => request('/admin/classrooms'),
+  createClassroom: (body) => request('/admin/classrooms', { method: 'POST', body: JSON.stringify(body) }),
+  updateClassroom: (id, body) => request(`/admin/classrooms/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteClassroom: (id) => request(`/admin/classrooms/${id}`, { method: 'DELETE' }),
   // 导出课表（带鉴权，前端 fetch + blob 下载）
   downloadSchedule: async (from, to, teacherId) => {
     const token = localStorage.getItem('gk_token');
