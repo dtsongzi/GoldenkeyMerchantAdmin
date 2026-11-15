@@ -178,6 +178,10 @@ jobs:
               echo "站点自检通过：http://127.0.0.1:8088/goldenkey/ → 200"
             else
               echo "::warning::站点自检 http://127.0.0.1:8088/goldenkey/ 返回 $CODE（nginx=$NGINX_STATE，配置里 listen 8088 共 ${LOADED:-0} 处，8088 监听：${L8088:-无}）"
+              # 把 nginx 侧的真实原因也带出来，省得反复猜
+              echo "::warning::nginx -t: $($SUDO nginx -t 2>&1 | tr '\n' '|' | cut -c1-300)"
+              echo "::warning::nginx 工作进程: $(pgrep -c nginx 2>/dev/null || echo 0)，8088 端口占用: $( ($SUDO ss -ltnp 2>/dev/null | grep ':8088' || echo 无) | tr '\n' ';' | cut -c1-200)"
+              echo "::warning::journal: $($SUDO journalctl -u nginx -n 12 --no-pager 2>&1 | tr '\n' '|' | cut -c1-700)"
             fi
           else
             echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
