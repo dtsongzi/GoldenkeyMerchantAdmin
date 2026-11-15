@@ -134,7 +134,7 @@ export default function Dashboard({ user }) {
         </div>
       ) : (
         <Card size="small" style={{ marginTop: 16 }}>
-          <Empty description="图表数据加载中…（若长时间空白，请确认后端 /api/admin/charts 正常）" />
+          <Empty description="图表数据加载中…（若长时间空白，请确认后端 /goldenkey/api/admin/charts 正常）" />
         </Card>
       ))}
     </>

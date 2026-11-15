@@ -12,7 +12,8 @@ export default defineConfig({
     port: 5173,
     host: true, // 监听 0.0.0.0，手机/其他设备也能访问 dev server
     proxy: {
-      '/api': {
+      // 接口统一前缀 /goldenkey/api 原样转发给后端（后端也在这个前缀下，不做改写）
+      '/goldenkey': {
         target: apiTarget,
         changeOrigin: true,
       },
