@@ -22,8 +22,8 @@ export default function Login({ onLogin }) {
   return (
     <div className="login-wrap">
       <Card className="login-card" styles={{ body: { padding: 34 } }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>商家登录</Typography.Title>
-        <Typography.Paragraph type="secondary">GoldenKey 钢琴工作室管理后台</Typography.Paragraph>
+        <Typography.Title level={3} style={{ margin: 0 }}>后台登录</Typography.Title>
+        <Typography.Paragraph type="secondary">GoldenKey 钢琴工作室管理后台 · 管理员与教师账号均可登录</Typography.Paragraph>
         <Form layout="vertical" initialValues={{ username: 'admin', password: 'admin123' }} onFinish={submit} style={{ marginTop: 20 }}>
           <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
             <Input prefix={<UserOutlined />} autoComplete="username" />
@@ -33,9 +33,12 @@ export default function Login({ onLogin }) {
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={loading}>登录</Button>
         </Form>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 0, fontSize: 12 }}>
-          管理员：admin / admin123 ｜ 教师（林晚晴）：lin / teacher123 ｜ 教师（陈牧之）：chen / teacher123
-        </Typography.Paragraph>
+        {/* 演示账号只在本地开发时提示，线上不暴露 */}
+        {/(^localhost$|^127\.0\.0\.1$)/.test(window.location.hostname) && (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 0, fontSize: 12 }}>
+            本地演示账号：admin / admin123 ｜ lin / teacher123 ｜ chen / teacher123
+          </Typography.Paragraph>
+        )}
       </Card>
     </div>
   );

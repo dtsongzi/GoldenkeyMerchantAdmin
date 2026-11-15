@@ -45,6 +45,14 @@ export const api = {
 
   teachers: () => request('/teachers'),
 
+  // 教师管理（管理员）：档案 + 登录账号
+  listAdminTeachers: (q = {}) => request('/admin/teachers' + qs(q)),
+  createTeacher: (body) => request('/admin/teachers', { method: 'POST', body: JSON.stringify(body) }),
+  updateTeacher: (id, body) => request(`/admin/teachers/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  resetTeacherPassword: (id, password) =>
+    request(`/admin/teachers/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  deleteTeacher: (id) => request(`/admin/teachers/${id}`, { method: 'DELETE' }),
+
   // 课程
   listCourses: () => request('/admin/courses'),
   teacherCourses: () => request('/teacher/courses'),

@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Layout, Menu, Button, Typography, Badge } from 'antd';
-import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined } from '@ant-design/icons';
+import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined, IdcardOutlined } from '@ant-design/icons';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Courses from './pages/Courses.jsx';
@@ -9,6 +9,7 @@ import Students from './pages/Students.jsx';
 import Schedule from './pages/Schedule.jsx';
 import Records from './pages/Records.jsx';
 import Enrollments from './pages/Enrollments.jsx';
+import Teachers from './pages/Teachers.jsx';
 import { api, currentUser } from './api.js';
 
 const { Sider, Content } = Layout;
@@ -27,6 +28,7 @@ function Shell({ user, onLogout, children }) {
   const items = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: '数据概览' },
     { key: '/enrollments', icon: <AuditOutlined />, label: <span>报名审核 {pending > 0 && <Badge count={pending} size="small" offset={[4, -2]} />}</span> },
+    { key: '/teachers', icon: <IdcardOutlined />, label: '教师管理', adminOnly: true },
     { key: '/courses', icon: <BookOutlined />, label: '课程管理' },
     { key: '/students', icon: <TeamOutlined />, label: '学生管理' },
     { key: '/schedule', icon: <CalendarOutlined />, label: '排课管理' },
@@ -48,7 +50,7 @@ function Shell({ user, onLogout, children }) {
           theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
-          items={items}
+          items={items.filter((it) => !it.adminOnly || user?.role === 'admin').map(({ adminOnly, ...it }) => it)}
           onClick={({ key }) => navigate(key)}
           style={{ background: 'transparent', borderRight: 0 }}
         />
@@ -95,6 +97,12 @@ export default function App() {
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Shell user={user} onLogout={logout}><Dashboard user={user} /></Shell>} />
       <Route path="/enrollments" element={<Shell user={user} onLogout={logout}><Enrollments user={user} /></Shell>} />
+      <Route
+        path="/teachers"
+        element={user?.role === 'admin'
+          ? <Shell user={user} onLogout={logout}><Teachers /></Shell>
+          : <Navigate to="/dashboard" replace />}
+      />
       <Route path="/courses" element={<Shell user={user} onLogout={logout}><Courses user={user} /></Shell>} />
       <Route path="/students" element={<Shell user={user} onLogout={logout}><Students user={user} /></Shell>} />
       <Route path="/schedule" element={<Shell user={user} onLogout={logout}><Schedule user={user} /></Shell>} />
