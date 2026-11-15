@@ -1,0 +1,129 @@
+name: Deploy GoldenKey Merchant Admin to ECS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# 与后端部署分开分组，互不取消；同一应用只允许一个部署
+concurrency:
+  group: deploy-goldenkey-admin
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  DEPLOY_PATH: '/opt/GoldenKeyAdmin'
+  NGINX_CONF: '/etc/nginx/conf.d/goldenkey-admin.conf'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist assets
+        run: |
+          set -e
+          test -s dist/index.html
+          for f in dist/assets/*.js; do node --check "$f"; done
+          # 产物清单用于服务器侧完整性校验（CSS 可能没有，用 find 避免通配落空）
+          (cd dist && { sha256sum index.html; find assets -type f \( -name '*.js' -o -name '*.css' \) -print0 | xargs -0 sha256sum; } > MANIFEST.sha256)
+          echo "dist OK: $(wc -l < dist/MANIFEST.sha256 | tr -d ' ') files verified, $(du -sh dist | cut -f1)"
+
+      - name: Package dist
+        run: |
+          set -e
+          # 带上 nginx 站点配置，首次部署时由服务器侧自动安装
+          cp deploy/nginx.goldenkey.conf dist/nginx.goldenkey.conf
+          tar czf goldenkey-admin-dist.tar.gz -C dist .
+          ls -lh goldenkey-admin-dist.tar.gz
+
+      - name: Upload artifact to server (scp)
+        env:
+          SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          R_HOST: ${{ secrets.ECS_HOST }}
+          R_USER: ${{ secrets.ECS_USER }}
+          R_PORT: ${{ secrets.ECS_PORT }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          echo "Uploading $(du -h goldenkey-admin-dist.tar.gz | cut -f1) to ${R_HOST}:/tmp/ ..."
+          timeout 300s scp -O \
+            -i /tmp/deploy_key \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+            -P "${R_PORT:-22}" \
+            goldenkey-admin-dist.tar.gz "${R_USER}@${R_HOST}:/tmp/"
+          echo "scp done"
+
+      - name: Remote deploy (ssh)
+        env:
+          SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          R_HOST: ${{ secrets.ECS_HOST }}
+          R_USER: ${{ secrets.ECS_USER }}
+          R_PORT: ${{ secrets.ECS_PORT }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          timeout 420s ssh \
+            -i /tmp/deploy_key \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+            -p "${R_PORT:-22}" "${R_USER}@${R_HOST}" 'bash -s' <<'REMOTE'
+          set -eo pipefail
+          export PATH="$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
+          NGINX_CONF="${{ env.NGINX_CONF }}"
+          STAGE="$(mktemp -d /tmp/gk-admin-XXXXXX)"
+          trap 'rm -rf "$STAGE"' EXIT
+
+          tar xzf /tmp/goldenkey-admin-dist.tar.gz -C "$STAGE"
+          rm -f /tmp/goldenkey-admin-dist.tar.gz
+          (cd "$STAGE" && sha256sum -c MANIFEST.sha256)
+
+          # 原子切换：前端产物无状态，旧目录整体替换
+          rm -rf "$DEPLOY_PATH"
+          mv "$STAGE" "$DEPLOY_PATH"
+          trap - EXIT
+          chmod -R 755 "$DEPLOY_PATH"
+          echo "Admin deploy OK: $DEPLOY_PATH"
+
+          # nginx 站点：已存在则不动，缺失则用产物里的配置初始化一次
+          if command -v nginx >/dev/null 2>&1; then
+            SUDO=""
+            if [ "$(id -u)" != "0" ]; then SUDO="sudo -n"; fi
+            if [ ! -f "$NGINX_CONF" ]; then
+              if $SUDO test -d /etc/nginx/conf.d 2>/dev/null; then
+                $SUDO cp "$DEPLOY_PATH/nginx.goldenkey.conf" "$NGINX_CONF"
+                echo "已安装 nginx 站点配置：$NGINX_CONF"
+              else
+                echo "::warning::无法写入 /etc/nginx/conf.d，请手动安装 deploy/nginx.goldenkey.conf"
+              fi
+            fi
+            if $SUDO nginx -t 2>/dev/null; then
+              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
+              echo "nginx 已重载"
+            else
+              echo "::warning::nginx -t 未通过（或缺少 sudo 权限），未重载；请检查配置"
+            fi
+          else
+            echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
+          fi
+          echo "Deploy completed at $(date '+%Y-%m-%d %H:%M:%S')"
+          REMOTE

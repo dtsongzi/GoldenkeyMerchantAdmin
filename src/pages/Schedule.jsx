@@ -1,724 +1,821 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Select, Checkbox, Space, Tag, Typography, Modal, TimePicker, DatePicker as AntDatePicker, Input, App as AntApp } from 'antd';
-import { LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Button, Select, Checkbox, Space, Tag, Typography, Modal, TimePicker, Input,
+  DatePicker, Segmented, Switch, InputNumber, Empty, App as AntApp, Tooltip,
+} from 'antd';
+import {
+  LeftOutlined, RightOutlined, EditOutlined, CheckOutlined, CloseOutlined,
+  DownloadOutlined, PrinterOutlined, SettingOutlined, PlusOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api, currentUser } from '../api.js';
+import {
+  DEFAULT_SETTINGS, WEEK_OPTIONS, ALL_WEEK, LESSON_STATUS,
+  fmt, addDays, parseLocal, parseTime, toTimeStr, timeOverlap, hhmm,
+  buildConflictMap, buildStudentHints, weekOf, conflictGroups, conflictDomains,
+} from '../schedule/utils.js';
+import ScheduleCanvas from '../schedule/ScheduleCanvas.jsx';
+import LessonModal from '../schedule/LessonModal.jsx';
+import '../schedule/schedule.css';
 
-// 用数值方式构造时间，不依赖 dayjs('10:30','HH:mm')（该写法需 customParseFormat 插件，否则 Invalid Date）
-function toDayjs(v) {
-  const vv = Math.min(v, 23 + 59 / 60); // 24:00 收敛到 23:59，避免 TimePicker 滚到次日
-  const h = Math.floor(vv), m = Math.round((vv - h) * 60);
-  return dayjs().hour(Math.min(23, h)).minute(m).second(0).millisecond(0);
-}
+const SETTINGS_KEY = 'gk_schedule_settings';
+const loadSettings = () => {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }; }
+  catch { return { ...DEFAULT_SETTINGS }; }
+};
+const toDayjs = (v) => dayjs().hour(Math.floor(v)).minute(Math.round((v - Math.floor(v)) * 60)).second(0).millisecond(0);
+const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
+// 多选下拉用完整「周X」标签，比单字更清晰
+const WEEK_SELECT_OPTIONS = WEEK_OPTIONS.map((d) => ({ value: d.value, label: `周${d.label}` }));
 
-// ---------- 常量 ----------
-const HOUR_PX = 44;
-const HOUR_START = 6;
-const HOUR_END = 24;
-const HOURS = HOUR_END - HOUR_START;
-const GRID_H = HOURS * HOUR_PX;
-const COL_W = 132;
-const LANE_W = 96;
-const HOURS_W = 52;
-const WINDOW = 10;
-const SNAP = 0.25;
-
-// ---------- 工具 ----------
-function fmt(d) {
-  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-function parseTime(t) { if (t == null) return 0; const [h, m] = String(t).split(':').map(Number); return (h || 0) + (m || 0) / 60; }
-function toTimeStr(v) {
-  const h = Math.floor(v), m = Math.round((v - h) * 60);
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
-}
-function hhmm(v) { return toTimeStr(v).slice(0, 5); }
-function clampHour(v) { return Math.min(HOUR_END, Math.max(HOUR_START, Math.round(v / SNAP) * SNAP)); }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function parseLocal(s) { return new Date(s + 'T00:00:00'); }
-
-// 关键：availability.id 与 bookings.id 是两套独立自增序列，直接用 id 做 key 会撞车，
-// 导致「拖动一个块，另一个表同 id 的块跟着一起动」。统一用 kind:id 作为唯一键。
-function uidOf(b) { return `${b.kind || 'avail'}:${b.id}`; }
-function blockHours(b) {
-  if (typeof b.start === 'number' && typeof b.end === 'number') return [b.start, b.end];
-  return [parseTime(b.start_time), parseTime(b.end_time)];
-}
-// 草稿基准：以当前块的真实时间为准
-function baseDraft(b) {
-  const [start, end] = blockHours(b);
-  return {
-    uid: uidOf(b), id: b.id, kind: b.kind, teacherId: b.teacher_id ?? null,
-    classroomId: b.classroom_id ?? null,
-    start, end, deleted: false, changed: false,
-  };
-}
-// 草稿新增块带上绘制时的车道 key，松手后仍留在原车道，避免选区「跳走」
-function laneKey(b) { return b.lane_key || (b.teacher_id ? 'T' + b.teacher_id : 'NA'); }
-
-// 无排课的日期也保留一条空车道，供用户点击/拖选新增
-function groupLanes(dayBlocks, defaultTeacherId = null) {
-  const map = new Map();
-  dayBlocks.forEach((b) => {
-    const k = laneKey(b);
-    if (!map.has(k)) map.set(k, { key: k, teacherId: b.teacher_id, blocks: [] });
-    map.get(k).blocks.push(b);
-  });
-  if (!map.size) {
-    const k = defaultTeacherId ? 'T' + defaultTeacherId : 'NA';
-    map.set(k, { key: k, teacherId: defaultTeacherId, blocks: [] });
-  }
-  return [...map.values()];
-}
-function dayWidth(lanes) {
-  const K = lanes.length || 1;
-  return K === 1 ? COL_W : K * LANE_W;
-}
-function computeWidths(days, blocks, defaultTeacherId) {
-  return days.map((d) => dayWidth(groupLanes(blocks.filter((b) => b.slot_date === fmt(d)), defaultTeacherId)));
-}
-
-// ---------- 课程表网格（主表 / 预览复用） ----------
-function ScheduleGrid({
-  days, blocks, canModify, drafts = {}, selection, defaultTeacherId, classrooms = [],
-  onBlockClick, onResizeStart, onDelete, onRestore, onLanePointerDown,
-  scrollRef, selected, onSelectDay, onScroll,
-}) {
-  const widths = computeWidths(days, blocks, defaultTeacherId);
-  const totalWidth = widths.reduce((a, b) => a + b, 0);
-  const roomName = (id) => (classrooms.find((r) => String(r.id) === String(id)) || {}).name || '';
-
-  const renderBlock = (b) => {
-    const uid = uidOf(b);
-    const dft = drafts[uid];
-    const [st, en] = dft ? [dft.start, dft.end] : blockHours(b);
-    const top = Math.max(0, (st - HOUR_START) * HOUR_PX);
-    const h = Math.max(6, (en - st) * HOUR_PX);
-    const isBook = b.kind === 'book';
-    const isNew = b.kind === 'new';
-    const deleted = !!dft?.deleted;
-    const changed = !!dft?.changed && !deleted;
-    const mod = !deleted && (canModify ? canModify(b) : false);
-    const roomLabel = dft && dft.classroomId !== undefined && dft.classroomId !== (b.classroom_id ?? null)
-      ? roomName(dft.classroomId)
-      : (b.classroom_name || roomName(dft?.classroomId) || '');
-    const cls = [
-      'block',
-      isBook ? 'book' : isNew ? 'new' : 'avail',
-      mod ? 'editable' : '', deleted ? 'deleted' : '', changed ? 'changed' : '',
-    ].filter(Boolean).join(' ');
-    return (
-      <div key={uid} className={cls} style={{ top, height: h }}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => mod && !isBook && onBlockClick && onBlockClick(b)}
-        title={`${hhmm(st)}-${hhmm(en)} ${b.teacher_name || ''} ${roomLabel} ${b.course_title || ''} ${b.member_name || ''}${deleted ? '（已标记删除，点「保存全部」生效）' : ''}`}>
-        {deleted ? (
-          <span className="block-undo" role="button" title="撤销删除"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onRestore && onRestore(b); }}>↶</span>
-        ) : mod && (
-          <span className="block-del" role="button" title="标记删除（保存后生效）"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onDelete && onDelete(b); }}>×</span>
-        )}
-        <div className="block-teacher">
-          {isNew ? '＋ 待保存' : (b.teacher_name || '未排')}
-          {deleted && ' · 将删除'}
-          {changed && ' · 已改'}
-        </div>
-        {roomLabel && <div className="block-room">{roomLabel}</div>}
-        {(isNew || changed) && <div className="block-course">{hhmm(st)}-{hhmm(en)}</div>}
-        {b.course_title && <div className="block-course">{b.course_title}</div>}
-        {b.member_name && <div className="block-member">{b.member_name}</div>}
-        {mod && !isBook && !isNew && onResizeStart && (
-          <>
-            <div className="block-handle top" onPointerDown={(e) => onResizeStart(e, 'top', b)} onClick={(e) => e.stopPropagation()} />
-            <div className="block-handle bottom" onPointerDown={(e) => onResizeStart(e, 'bottom', b)} onClick={(e) => e.stopPropagation()} />
-          </>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="grid-scroll" ref={scrollRef} onScroll={onScroll}>
-      <div className="grid-inner" style={{ width: HOURS_W + totalWidth }}>
-        <div className="grid-head">
-          <div className="head-hours">时间</div>
-          {days.map((d, i) => (
-            <div key={i}
-              className={'head-day' + (selected === fmt(d) ? ' active' : '')}
-              style={{ width: widths[i] }}
-              onClick={() => onSelectDay && onSelectDay(i)}>
-              <span className="mc">{d.getMonth() + 1}/{d.getDate()}</span>
-              <span className="wk">{['日', '一', '二', '三', '四', '五', '六'][d.getDay()]}</span>
-            </div>
-          ))}
-        </div>
-        <div className="grid-body">
-          <div className="grid-hours" style={{ height: GRID_H }}>
-            {Array.from({ length: HOURS }, (_, i) => <div key={i} className="hour-label">{HOUR_START + i}:00</div>)}
-          </div>
-          {days.map((d, i) => {
-            const key = fmt(d);
-            const lanes = groupLanes(blocks.filter((b) => b.slot_date === key), defaultTeacherId);
-            const lw = lanes.length === 1 ? COL_W : LANE_W;
-            return (
-              <div key={i} className={'grid-col' + (key === selected ? ' sel' : '')} style={{ width: widths[i], height: GRID_H }}>
-                <div className="col-lanes">
-                  {lanes.map((lane) => {
-                    const showSel = selection && selection.date === key && selection.laneKey === lane.key;
-                    return (
-                      <div key={lane.key} className="lane" style={{ width: lw }}
-                        onPointerDown={(e) => onLanePointerDown && onLanePointerDown(e, key, lane.key, lane.teacherId)}>
-                        {lane.blocks.map(renderBlock)}
-                        {showSel && (
-                          <div className="sel-block"
-                            style={{ top: (selection.start - HOUR_START) * HOUR_PX, height: Math.max(6, (selection.end - selection.start) * HOUR_PX) }}>
-                            <span>{hhmm(selection.start)}</span>
-                            <span>{hhmm(selection.end)}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------- 页面 ----------
 export default function Schedule({ user }) {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const role = user?.role || currentUser()?.role || 'admin';
   const isAdmin = role === 'admin';
-  const isTeacher = role === 'teacher';
-  const canEdit = isAdmin || isTeacher;
   const myTeacherId = user?.teacherId || currentUser()?.teacherId;
+  const canEdit = isAdmin || role === 'teacher';
 
   const today = new Date();
-  const [windowStart, setWindowStart] = useState(fmt(addDays(today, -4)));
-  const [selected, setSelected] = useState(fmt(today));
-  const [teacherId, setTeacherId] = useState(isAdmin ? '' : String(myTeacherId));
+  const [settings, setSettings] = useState(loadSettings);
+  const [viewMode, setViewMode] = useState('week');
+  const [editing, setEditing] = useState(false);
+  const [windowStart, setWindowStart] = useState(fmt(mondayOf(today)));
+  const [selectedDate, setSelectedDate] = useState(fmt(today));
+
   const [teachers, setTeachers] = useState([]);
   const [classrooms, setClassrooms] = useState([]);
-  const [blocks, setBlocks] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [lessons, setLessons] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [editor, setEditor] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // 统一草稿：drafts = 已有块的修改/删除标记；creates = 空白区新增的块。
-  // 所有操作都只改这两处，点「保存全部」才调用后端。
-  const [drafts, setDrafts] = useState({});
-  const [creates, setCreates] = useState([]);
-  const [activeCid, setActiveCid] = useState(null);   // 正在编辑的新增草稿
-  const [selection, setSelection] = useState(null);   // 拖动过程中的实时选区
-  const [quick, setQuick] = useState({ startDate: fmt(today), endDate: fmt(addDays(today, 14)), startHour: '10:00', endHour: '21:00', weekdaysOnly: false, msg: '' });
-  const [preview, setPreview] = useState(null);
-  const [roomMgr, setRoomMgr] = useState(false);       // 教室管理弹窗
+  const [filter, setFilter] = useState({ teacherId: undefined, classroomId: undefined, studentId: undefined });
+  const [quick, setQuick] = useState({
+    teacherId: undefined,
+    courseId: undefined,
+    roomIds: [],
+    startDate: fmt(today),
+    endDate: fmt(addDays(today, 14)),
+    weekdays: ALL_WEEK,
+    startHour: '09:00',
+    endHour: '10:00',
+    studentIds: [],
+    remark: '',
+    status: 'normal',
+  });
+
+  const [editor, setEditor] = useState(null);
+  const [editorKey, setEditorKey] = useState(0);
+  // 拖拽新建的草稿：弹窗期间在画布上画轮廓，并置灰「保存后会被替换」的冲突课
+  const [pendingNew, setPendingNew] = useState(null);
+  const [batchPreview, setBatchPreview] = useState(null);
+  const [conflictModal, setConflictModal] = useState(false);
+  const [roomMgr, setRoomMgr] = useState(false);
+  const [settingsModal, setSettingsModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
+  const [ctx, setCtx] = useState(null);
+  // 本次编辑会话：进入编辑时存一份快照，取消编辑可整体回滚
+  const [changes, setChanges] = useState(0);
 
   const scrollRef = useRef(null);
-  const dragRef = useRef(null);
-  const draftsRef = useRef({});          // 拖动时用 ref 读最新草稿，避免闭包过期
-  const selectRef = useRef(null);
-  const selValueRef = useRef(null);
-  const createSeq = useRef(0);
+  const sessionRef = useRef(null);
+  const lessonsRef = useRef([]);
+  lessonsRef.current = lessons;
 
-  const effTeacher = isAdmin ? (teacherId || '') : String(myTeacherId);
-  const defaultTeacherId = effTeacher ? Number(effTeacher) : (teachers[0]?.id ?? null);
-  const defaultRoomId = classrooms[0]?.id ?? null;
+  const daysCount = viewMode === 'day' ? 1 : 7;   // 视图固定最多一周，不再横向扩展
+  const days = useMemo(
+    () => Array.from({ length: daysCount }, (_, i) => addDays(parseLocal(windowStart), i)),
+    [windowStart, daysCount]
+  );
+  const rangeFrom = windowStart;
+  const rangeTo = fmt(days[days.length - 1]);
 
-  // 草稿写入统一走这里：ref 与 state 同步，避免多次拖动之间读到旧值
-  const setAllDrafts = (next) => { draftsRef.current = next; setDrafts(next); };
-  const patchDraft = (b, fn) => {
-    const uid = uidOf(b);
-    const next = { ...draftsRef.current };
-    const cur = next[uid] || baseDraft(b);
-    next[uid] = fn(cur);
-    setAllDrafts(next);
-  };
-  const resetDrafts = () => {
-    setAllDrafts({});
-    setCreates([]);
-    setActiveCid(null);
-    setSelection(null);
-    selectRef.current = null;
-    selValueRef.current = null;
-    dragRef.current = null;
-  };
-
-  const load = () => {
+  // ---------- 数据 ----------
+  const load = useCallback(async () => {
     setLoading(true);
-    const from = windowStart;
-    const to = fmt(addDays(parseLocal(windowStart), WINDOW - 1));
-    api.scheduleGrid({ from, to, teacherId: effTeacher })
-      .then(setBlocks).catch(() => setBlocks([])).finally(() => setLoading(false));
-  };
+    try {
+      // 不传筛选条件：拉取窗口内全量，冲突检测才准确；筛选只在前端做展示过滤
+      const rows = await api.lessons({ from: rangeFrom, to: rangeTo });
+      setLessons(rows || []);
+      return rows || [];
+    } catch (e) {
+      message.error('课表加载失败：' + e.message);
+      setLessons([]);
+      return [];
+    } finally { setLoading(false); }
+  }, [rangeFrom, rangeTo, message]);
+
   useEffect(() => { api.teachers().then(setTeachers).catch(() => {}); }, []);
   useEffect(() => { api.classrooms().then(setClassrooms).catch(() => {}); }, []);
-  useEffect(() => { resetDrafts(); load(); /* eslint-disable-next-line */ }, [windowStart, effTeacher]);
+  useEffect(() => {
+    const p = isAdmin ? api.listCourses() : api.teacherCourses();
+    p.then((rows) => setCourses((rows || []).filter((c) => c.status === 1))).catch(() => setCourses([]));
+  }, [isAdmin]);
+  useEffect(() => {
+    const p = isAdmin ? api.listMembers() : api.teacherStudents();
+    p.then((rows) => setMembers(rows || [])).catch(() => setMembers([]));
+  }, [isAdmin]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [rangeFrom, rangeTo]);
 
-  // 网格实际渲染的块 = 数据库块（含删除标记）+ 新增草稿块
-  const displayBlocks = useMemo(
-    () => [...blocks, ...creates],
-    [blocks, creates]
-  );
-  const days = useMemo(
-    () => Array.from({ length: WINDOW }, (_, i) => addDays(parseLocal(windowStart), i)),
-    [windowStart]
-  );
-  const widths = useMemo(
-    () => computeWidths(days, displayBlocks, defaultTeacherId),
-    /* eslint-disable-next-line */ [days, displayBlocks, defaultTeacherId]
-  );
+  // 表单默认值
+  useEffect(() => {
+    if (!classrooms.length) return;
+    setQuick((q) => (q.roomIds.length ? q : { ...q, roomIds: [classrooms[0].id] }));
+  }, [classrooms]);
+  useEffect(() => {
+    if (!courses.length) return;
+    setQuick((q) => (q.courseId ? q : { ...q, courseId: courses[0].id }));
+  }, [courses]);
+  useEffect(() => {
+    if (!teachers.length) return;
+    setQuick((q) => (q.teacherId ? q : { ...q, teacherId: isAdmin ? teachers[0].id : myTeacherId }));
+  }, [teachers, isAdmin, myTeacherId]);
 
-  const scrollToDay = (idx) => {
-    if (scrollRef.current) scrollRef.current.scrollTo({ left: widths.slice(0, idx).reduce((a, b) => a + b, 0), behavior: 'smooth' });
-    setSelected(fmt(days[idx]));
+  useEffect(() => {
+    const close = () => setCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('resize', close); };
+  }, []);
+
+  const conflicts = useMemo(() => buildConflictMap(lessons), [lessons]);
+  const studentHints = useMemo(() => buildStudentHints(lessons), [lessons]);
+  const displayLessons = useMemo(() => lessons.filter((l) => {
+    if (filter.teacherId && String(l.teacher_id) !== String(filter.teacherId)) return false;
+    if (filter.classroomId && String(l.classroom_id) !== String(filter.classroomId)) return false;
+    if (filter.studentId && !(l.students || []).some((s) => String(s.id) === String(filter.studentId))) return false;
+    return true;
+  }), [lessons, filter]);
+  // 冲突域：同一教师（或同一教室）+ 同一时段为一处冲突；课程名不参与判定
+  const domains = useMemo(() => conflictDomains(displayLessons), [displayLessons]);
+  const conflictCount = domains.length;
+  const conflictRows = domains;
+
+  // ---------- 编辑会话（进入编辑存快照 → 取消编辑整体回滚 / 完成编辑保留） ----------
+  const snapshotAll = () => lessonsRef.current.map((r) => ({
+    ...r, studentIds: (r.students || []).map((s) => s.id),
+  }));
+
+  const enterEdit = () => {
+    sessionRef.current = { base: snapshotAll(), changes: 0 };
+    setChanges(0);
+    setEditing(true);
   };
-  const onScroll = () => {
-    if (!scrollRef.current) return;
-    const sl = scrollRef.current.scrollLeft;
-    let acc = 0;
-    for (let i = 0; i < days.length; i++) { if (sl < acc + widths[i]) { setSelected(fmt(days[i])); return; } acc += widths[i]; }
+  const finishEdit = () => {
+    sessionRef.current = null;
+    setChanges(0);
+    setEditing(false);
+    message.success('已保存本次编辑');
   };
-  const shift = (n) => setWindowStart(fmt(addDays(parseLocal(windowStart), n)));
-
-  const canModify = (b) => {
-    if (!canEdit) return false;
-    if (b.kind === 'new') return true;
-    if (isAdmin) return true;
-    return b.kind === 'avail' && String(b.teacher_id) === String(myTeacherId);
-  };
-
-  // ---------- 编辑弹窗：只记草稿 ----------
-  const openEditor = (b) => {
-    if (b.kind === 'new') { setActiveCid(b.cid); return; }   // 新增块用上方草稿条编辑
-    const d = draftsRef.current[uidOf(b)] || baseDraft(b);
-    setEditor({ uid: uidOf(b), b, start: d.start, end: d.end, teacherId: d.teacherId ?? '', classroomId: d.classroomId ?? '', dirty: false });
-  };
-  const stageEditor = () => {
-    if (!editor) return;
-    if (editor.end <= editor.start) { message.warning('结束时间需晚于开始时间'); return; }
-    patchDraft(editor.b, (d) => ({
-      ...d, start: editor.start, end: editor.end,
-      teacherId: editor.teacherId || null, classroomId: editor.classroomId || null,
-      changed: true, deleted: false,
-    }));
-    setEditor(null);
-    message.info('已记入草稿，点击「保存全部」后生效');
-  };
-
-  // ---------- 拖动边界改时段（每个块独立草稿） ----------
-  const startResize = (e, edge, b) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const uid = uidOf(b);
-    const base = draftsRef.current[uid] || baseDraft(b);
-    // 已有草稿则以草稿为基准，保证先拖上边界再拖下边界时上一半的调整被保留
-    dragRef.current = { uid, edge, startY: e.clientY, baseStart: base.start, baseEnd: base.end, base };
-    if (!draftsRef.current[uid]) patchDraft(b, () => base);
-    document.body.style.userSelect = 'none';
-    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* 忽略 */ }
-
-    let raf = 0, lastY = e.clientY;
-    const move = (ev) => {
-      lastY = ev.clientY;
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const s = dragRef.current;
-        if (!s) return;
-        const snap = Math.round(((lastY - s.startY) / HOUR_PX) / SNAP) * SNAP;
-        let start = s.baseStart, end = s.baseEnd;
-        if (s.edge === 'top') start = Math.max(HOUR_START, Math.min(s.baseEnd - SNAP, s.baseStart + snap));
-        else end = Math.min(HOUR_END, Math.max(s.baseStart + SNAP, s.baseEnd + snap));
-        const next = { ...draftsRef.current };
-        const cur = next[s.uid] || s.base;
-        next[s.uid] = { ...cur, start, end, changed: cur.changed || start !== s.baseStart || end !== s.baseEnd };
-        setAllDrafts(next);
-      });
-    };
-    const up = () => {
-      if (raf) cancelAnimationFrame(raf);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', up);
-      document.body.style.userSelect = '';
-      dragRef.current = null;
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', up);
+  const cancelEdit = () => {
+    const n = sessionRef.current?.changes || 0;
+    const exit = () => { sessionRef.current = null; setChanges(0); setEditing(false); };
+    if (!n) { exit(); return; }
+    modal.confirm({
+      title: '放弃本次编辑？',
+      content: `本次编辑共 ${n} 处改动。取消后课表将回到进入编辑前的状态：新增的课程会被删除，被修改、被删除的课程会恢复。`,
+      okText: '放弃改动并退出', cancelText: '继续编辑', okButtonProps: { danger: true },
+      onOk: async () => {
+        const base = sessionRef.current?.base || [];
+        setBusy(true);
+        try {
+          await api.restoreLessons({ ids: lessonsRef.current.map((l) => l.id), lessons: base });
+          await load();
+          exit();
+          message.success('已取消本次编辑，课表已恢复');
+        } catch (e) {
+          message.error('恢复失败：' + e.message);
+        } finally { setBusy(false); }
+      },
+    });
   };
 
-  // ---------- 删除：只打删除标记，不调用接口 ----------
-  const markDelete = (b) => {
-    if (b.kind === 'new') {
-      setCreates((prev) => prev.filter((c) => c.cid !== b.cid));
-      if (activeCid === b.cid) setActiveCid(null);
+  const mutate = async (label, fn) => {
+    setBusy(true);
+    try {
+      const res = await fn();
+      await load();
+      if (sessionRef.current) {
+        sessionRef.current.changes += 1;
+        setChanges(sessionRef.current.changes);
+      }
+      return res;
+    } catch (e) {
+      message.error(`${label}失败：${e.message}`);
+      throw e;
+    } finally { setBusy(false); }
+  };
+
+  // ---------- 冲突确认 ----------
+  // 分类：self = 与本人（同教师）时段重叠，可直接覆盖；other = 与其他教师冲突，仅提示不可覆盖
+  const classifyConflicts = (candidate, excludeId) => {
+    const tid = candidate.teacher_id;
+    // 注意参数顺序：conflictGroups(候选课, 现有课程数组, 排除 id, 归属教师)
+    return conflictGroups(candidate, lessonsRef.current, excludeId, tid);
+  };
+  const conflictsFor = (candidate) => classifyConflicts(candidate, undefined).self.map((l) => l.id);
+
+  // 「他人冲突」只可能是教室冲突（同教师重叠已归入 self，可直接覆盖），
+  // 所以提示必须点名是哪间教室、被谁占用，而不是笼统说「与其他教师冲突」。
+  const roomLabel = (id) => classrooms.find((c) => String(c.id) === String(id))?.name || '该教室';
+  const roomClashText = (other, candidate) => {
+    const who = [...new Set(other.map((l) => l.teacher_name).filter(Boolean))].join('、') || '其他教师';
+    const t = other[0];
+    const span = `${String(t.start_time).slice(0, 5)}–${String(t.end_time).slice(0, 5)}`;
+    return `教室「${roomLabel(candidate.classroom_id)}」${span} 已被 ${who} 占用`;
+  };
+  // 该时段还能用的空闲教室（用于给出可执行的替代方案）
+  const freeRoomAt = (candidate) => classrooms.find((c) => c.status !== 0
+    && String(c.id) !== String(candidate.classroom_id)
+    && !lessonsRef.current.some((l) => l.slot_date === candidate.slot_date
+      && String(l.classroom_id) === String(c.id) && timeOverlap(l, candidate)));
+
+  const confirmIfConflicts = (candidate, excludeId, action) => {
+    const { self, other } = classifyConflicts(candidate, excludeId);
+    if (other.length) {
+      const free = freeRoomAt(candidate);
+      message.warning(
+        `无法保存：${roomClashText(other, candidate)}${free ? `，可改用「${free.name}」或调整时间` : '，该时段暂无空闲教室，请调整时间'}`
+      );
       return;
     }
-    patchDraft(b, (d) => ({ ...d, deleted: true }));
-  };
-  const restore = (b) => {
-    const uid = uidOf(b);
-    const next = { ...draftsRef.current };
-    const d = next[uid];
-    if (!d) return;
-    if (!d.changed) delete next[uid];
-    else next[uid] = { ...d, deleted: false };
-    setAllDrafts(next);
+    // 仅本人时段重叠：可直接覆盖保存（冲突课块标红提示）
+    if (self.length) message.info(`与 ${self.length} 节本人课程时段重叠，已保存（课表将标红提示）`);
+    action();
   };
 
-  // ---------- 空白处点击 / 拖动框选新增时段 ----------
-  // 松手后立刻把选区变成「新增草稿块」渲染在网格里，所以选区不会消失
-  const startSelect = (e, date, laneKeyOfLane, laneTeacherId) => {
-    if (!canEdit || e.button !== 0 || dragRef.current || selectRef.current) return;
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const anchor = clampHour(HOUR_START + (e.clientY - rect.top) / HOUR_PX);
-    const start = Math.min(anchor, HOUR_END - SNAP);
-    const tid = isTeacher ? myTeacherId : (laneTeacherId ?? defaultTeacherId ?? null);
-    const session = { date, laneKey: laneKeyOfLane, teacherId: tid, anchor, rectTop: rect.top };
-    selectRef.current = session;
-    const initial = { date, laneKey: laneKeyOfLane, teacherId: tid, start, end: Math.min(HOUR_END, start + 1) };
-    selValueRef.current = initial;
-    setSelection(initial);
-    document.body.style.userSelect = 'none';
+  // ---------- 课块交互 ----------
+  // 与候选新课存在「教师 / 教室 + 时间重叠」冲突的现有课程（保存时会被移除替换）
+  const draftCandidate = (d) => ({
+    slot_date: d.date, start_time: toTimeStr(d.start), end_time: toTimeStr(d.end),
+    teacher_id: d.teacher_id, classroom_id: d.classroom_id,
+  });
+  const closeEditor = () => { setEditor(null); setPendingNew(null); };
 
-    const move = (ev) => {
-      const s = selectRef.current;
-      if (!s) return;
-      const t = clampHour(HOUR_START + (ev.clientY - s.rectTop) / HOUR_PX);
-      const st = Math.min(s.anchor, t);
-      const en = Math.max(s.anchor, t, st + SNAP);
-      const v = { date: s.date, laneKey: s.laneKey, teacherId: s.teacherId, start: st, end: Math.min(HOUR_END, en) };
-      selValueRef.current = v;
-      setSelection(v);
+  const openNew = (v) => {
+    if (!editing) return;
+    const draft = {
+      date: v.date, start: v.start, end: v.end,
+      teacher_id: v.teacherId ?? (quick.teacherId || (isAdmin ? teachers[0]?.id : myTeacherId) || null),
+      classroom_id: v.classroomId ?? (quick.roomIds[0] || classrooms[0]?.id || null),
     };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', up);
-      document.body.style.userSelect = '';
-      selectRef.current = null;
-      const v = selValueRef.current;
-      selValueRef.current = null;
-      setSelection(null);
-      if (!v || v.end <= v.start) return;
-      const cid = 'c' + (++createSeq.current);
-      setCreates((prev) => [...prev, {
-        cid, id: cid, kind: 'new', slot_date: v.date, start: v.start, end: v.end,
-        lane_key: v.laneKey,
-        teacher_id: isTeacher ? myTeacherId : (v.teacherId ?? null), teacher_name: '',
-        classroom_id: defaultRoomId, classroom_name: classrooms.find((r) => r.id === defaultRoomId)?.name || '',
-        course_title: null, member_name: null,
-      }]);
-      setActiveCid(cid);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', up);
+    setPendingNew({ ...draft, removeIds: conflictsFor(draftCandidate(draft)) });
+    // 关键：把拖拽落点所在泳道的教师 / 教室作为弹窗初值，
+    // 否则周视图会回落到顶部表单的默认教师，建出来的课跑到别人的泳道里。
+    setEditor({
+      lesson: null,
+      initial: {
+        date: v.date, start: v.start, end: v.end,
+        teacherId: draft.teacher_id, classroomId: draft.classroom_id,
+      },
+    });
+    setEditorKey((k) => k + 1);
   };
+  const openEdit = (lesson) => {
+    if (!editing) return;
+    setPendingNew(null);
+    setEditor({ lesson, initial: null });
+    setEditorKey((k) => k + 1);
+    setCtx(null);
+  };
+  // 弹窗内改教师 / 教室 / 日期 / 时段时，画布轮廓与置灰同步刷新
+  const onDraftChange = (f) => {
+    setPendingNew((p) => {
+      if (!p) return p;
+      const draft = {
+        date: f.slot_date, start: f.start, end: f.end,
+        teacher_id: f.teacher_id ?? null, classroom_id: f.classroom_id ?? null,
+      };
+      return { ...draft, removeIds: conflictsFor(draftCandidate(draft)) };
+    });
+  };
+  const pendingRemoveIds = useMemo(
+    () => new Set(editor?.lesson ? [] : (pendingNew?.removeIds || [])),
+    [editor, pendingNew]
+  );
 
-  const activeCreate = creates.find((c) => c.cid === activeCid) || null;
-  const updateCreate = (cid, patch) => setCreates((prev) => prev.map((c) => (c.cid === cid ? { ...c, ...patch } : c)));
-  const teacherName = (id) => teachers.find((t) => String(t.id) === String(id))?.name || '';
+  // 新建草稿的实时冲突情况：本人重叠（会被替换）与教室被占（必须处理）分开呈现
+  const draftClash = useMemo(() => {
+    if (!pendingNew || editor?.lesson) return null;
+    const candidate = draftCandidate(pendingNew);
+    const { self, other } = conflictGroups(candidate, lessons, undefined, candidate.teacher_id);
+    const free = other.length ? freeRoomAt(candidate) : null;
+    return {
+      selfCount: self.length,
+      roomText: other.length ? roomClashText(other, candidate) : '',
+      freeRoom: free ? { id: free.id, name: free.name } : null,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingNew, editor, lessons, classrooms]);
+  const draftDefaults = useMemo(() => ({
+    teacherId: quick.teacherId || (isAdmin ? teachers[0]?.id : myTeacherId) || null,
+    classroomId: quick.roomIds[0] || classrooms[0]?.id || null,
+  }), [quick.teacherId, quick.roomIds, teachers, classrooms, isAdmin, myTeacherId]);
+  const editorMeta = useMemo(() => ({
+    teachers, classrooms, courses, members, isAdmin, myTeacherId, settings,
+    defaultTeacherId: editor?.initial?.laneValue && viewMode === 'teacher' ? Number(editor.initial.laneValue)
+      : (quick.teacherId || (isAdmin ? teachers[0]?.id : myTeacherId)),
+    defaultClassroomId: editor?.initial?.laneValue && viewMode === 'room' ? Number(editor.initial.laneValue)
+      : (quick.roomIds[0] || classrooms[0]?.id),
+    defaultCourseId: quick.courseId,
+    defaultCourseTitle: courses.find((c) => c.id === quick.courseId)?.title || '',
+  }), [teachers, classrooms, courses, members, isAdmin, myTeacherId, settings, editor, viewMode, quick]);
 
-  // ---------- 保存全部：唯一写库入口 ----------
-  const draftList = Object.values(drafts);
-  const changeCount = draftList.filter((d) => d.changed && !d.deleted).length;
-  const deleteCount = draftList.filter((d) => d.deleted).length;
-  const createCount = creates.length;
-  const pendingCount = changeCount + deleteCount + createCount;
+  const seriesCount = editor?.lesson?.series_id
+    ? lessons.filter((l) => l.series_id === editor.lesson.series_id).length : 0;
 
-  // 本地预估：保存后会覆盖掉多少个「已有可约块」（后端还会额外排除已被学员预约的）
-  const overwritePreview = (() => {
-    const items = [];
-    draftList.forEach((d) => {
-      if (d.deleted || !d.changed) return;
-      const b = blocks.find((x) => uidOf(x) === d.uid);
-      if (b && b.kind === 'avail') {
-        items.push({ uid: d.uid, date: b.slot_date, start: d.start, end: d.end, teacherId: d.teacherId, classroomId: d.classroomId });
+  const submitEditor = async (form) => {
+    const { scope, ...body } = form;
+    if (!editor.lesson) {
+      // 拖拽新建：弹窗期间冲突旧课已在画布上置灰预览（仅本人冲突可被替换）
+      const candidate = { slot_date: body.slot_date, start_time: body.start_time, end_time: body.end_time,
+        teacher_id: body.teacher_id, classroom_id: body.classroom_id };
+      const { self, other } = classifyConflicts(candidate, undefined);
+      if (other.length) {
+        const free = freeRoomAt(candidate);
+        message.warning(
+          `无法创建：${roomClashText(other, candidate)}${free ? `，可改用「${free.name}」或调整时间` : '，该时段暂无空闲教室，请调整时间'}`
+        );
+        return;
       }
+      const removeIds = self.map((l) => l.id);
+      try {
+        await mutate(
+          removeIds.length ? `新建课程（替换 ${removeIds.length} 节本人冲突课）` : '新建课程',
+          async () => {
+            if (removeIds.length) await api.deleteLessons(removeIds);
+            return api.createLesson(body);
+          }
+        );
+        closeEditor();
+        message.success(removeIds.length
+          ? `课程已创建，已移除 ${removeIds.length} 节本人冲突课程`
+          : '课程已创建');
+      } catch { /* mutate 已提示 */ }
+      return;
+    }
+    if (scope === 'series') {
+      const ids = lessons.filter((l) => l.series_id === editor.lesson.series_id).map((l) => l.id);
+      await mutate('修改整个系列', () => api.updateLessonSeries(editor.lesson.series_id, body));
+      closeEditor();
+      message.success(`已统一修改 ${ids.length} 节课`);
+      return;
+    }
+    const candidate = { slot_date: body.slot_date, start_time: body.start_time, end_time: body.end_time,
+      teacher_id: body.teacher_id, classroom_id: body.classroom_id };
+    confirmIfConflicts(candidate, editor.lesson.id, async () => {
+      try {
+        await mutate('修改课程', () => api.updateLesson(editor.lesson.id, body));
+        closeEditor();
+        message.success('课程已更新');
+      } catch { /* mutate 已提示 */ }
     });
-    creates.forEach((c) => items.push({
-      uid: c.cid, date: c.slot_date, start: c.start, end: c.end, teacherId: c.teacher_id, classroomId: c.classroom_id,
-    }));
-    const hit = new Set();
-    items.forEach((it) => {
-      blocks.forEach((b) => {
-        if (b.kind !== 'avail' || b.slot_date !== it.date) return;
-        const u = uidOf(b);
-        if (u === it.uid || drafts[u]?.deleted) return;
-        const [bs, be] = blockHours(b);
-        const sameTeacher = String(b.teacher_id) === String(it.teacherId);
-        const sameRoom = !!it.classroomId && String(b.classroom_id) === String(it.classroomId);
-        if (!sameTeacher && !sameRoom) return;
-        if (bs < it.end && be > it.start) hit.add(u);
-      });
-    });
-    return hit.size;
-  })();
+  };
 
-  const saveAll = async () => {
-    if (!pendingCount) return;
-    const bad = creates.find((c) => c.end <= c.start || !c.teacher_id);
-    if (bad) { message.warning('存在结束时间不合法或未指定教师的新增时段，请先修正'); setActiveCid(bad.cid); return; }
-    setSaving(true);
+  const handleMove = (lesson, patch, candidate) => {
+    confirmIfConflicts(candidate, lesson.id, () => {
+      mutate('移动课程', () => api.updateLesson(lesson.id, patch)).catch(() => {});
+    });
+  };
+  const handleResize = (lesson, patch) => {
+    const candidate = {
+      slot_date: lesson.slot_date, start_time: patch.start_time, end_time: patch.end_time,
+      teacher_id: lesson.teacher_id, classroom_id: lesson.classroom_id,
+    };
+    confirmIfConflicts(candidate, lesson.id, () => {
+      mutate('调整课程时长', () => api.updateLesson(lesson.id, patch)).catch(() => {});
+    });
+  };
+  // 删除直接生效（课块右上角 × / 右键菜单 / 弹窗内按钮共用）；编辑期内可用「取消编辑」整体回滚
+  const handleDelete = async (lesson) => {
+    closeEditor();
+    setCtx(null);
     try {
-      let overwritten = 0, blocked = 0;
-      for (const d of draftList.filter((x) => x.deleted)) {
-        await api.deleteScheduleBlock(d.id, d.kind);
-      }
-      // overwrite: true —— 拖动后的时段若盖住其他块，由后端删除被覆盖的块（已有学员预约的跳过）
-      for (const d of draftList.filter((x) => x.changed && !x.deleted)) {
-        const r = await api.updateScheduleBlock(d.id, {
-          start_time: toTimeStr(d.start), end_time: toTimeStr(d.end),
-          teacher_id: d.teacherId || null, classroom_id: d.classroomId || null, overwrite: true,
-        });
-        overwritten += Number(r?.deleted || 0);
-        blocked += Number(r?.skipped || 0);
-      }
-      for (const c of creates) {
-        const r = await api.createScheduleBlock({
-          slot_date: c.slot_date, start_time: toTimeStr(c.start), end_time: toTimeStr(c.end),
-          teacher_id: c.teacher_id, classroom_id: c.classroom_id || null, overwrite: true,
-        });
-        overwritten += Number(r?.deleted || 0);
-        blocked += Number(r?.skipped || 0);
-      }
-      message.success(
-        `已保存：新增 ${createCount} / 修改 ${changeCount} / 删除 ${deleteCount}` +
-        (overwritten ? `，覆盖删除 ${overwritten} 个原时段` : '') +
-        (blocked ? `；${blocked} 个已有学员预约的时段未被覆盖` : '')
-      );
-      resetDrafts();
+      await mutate('删除课程', () => api.deleteLesson(lesson.id));
+      message.info('课程已删除，本次编辑内可点击「取消编辑」恢复');
+    } catch { /* mutate 已提示 */ }
+  };
+  const handleDeleteSeries = async (seriesId) => {
+    const ids = lessons.filter((l) => l.series_id === seriesId).map((l) => l.id);
+    closeEditor();
+    await mutate('删除整个系列', () => api.deleteLessonSeries(seriesId)).catch(() => {});
+  };
+  const handleDuplicate = async (lesson) => {
+    setCtx(null);
+    await mutate('复制课程', () => api.duplicateLesson(lesson.id)).catch(() => {});
+  };
+
+  // ---------- 批量循环排课 ----------
+  const batchPayload = () => {
+    const tid = isAdmin ? quick.teacherId : myTeacherId;
+    return {
+      teacherId: tid,
+      courseId: quick.courseId,
+      title: courses.find((c) => c.id === quick.courseId)?.title || '',
+      classroomIds: quick.roomIds,
+      startDate: quick.startDate,
+      endDate: quick.endDate,
+      weekdays: quick.weekdays,
+      startHour: quick.startHour,
+      endHour: quick.endHour,
+      studentIds: quick.studentIds,
+      remark: quick.remark,
+      lesson_status: quick.status,
+    };
+  };
+  const doBatch = async (payload, skipConflicts) => {
+    setBatchPreview(null);
+    const res = await mutate('批量循环排课',
+      () => api.batchLessons({ ...payload, previewOnly: false, skipConflicts }));
+    message.success(`已生成 ${res.created?.length || 0} 节课${res.skipped ? `，跳过 ${res.skipped} 节冲突课` : ''}`);
+    if (res.created?.length) setSelectedDate(payload.startDate);
+  };
+  const applyQuick = async () => {
+    if (!editing) { message.warning('请先点击右上角「编辑课表」'); return; }
+    const p = batchPayload();
+    if (!p.teacherId) return message.warning('请选择上课教师');
+    if (!p.courseId) return message.warning('请选择课程');
+    if (!p.classroomIds.length) return message.warning('请至少选择一间教室');
+    if (!p.weekdays.length) return message.warning('请至少选择一个重复星期');
+    if (!p.startDate || !p.endDate) return message.warning('请选择起止日期');
+    if (p.startDate > p.endDate) return message.warning('结束日期不能早于开始日期');
+    if (parseTime(p.endHour) <= parseTime(p.startHour)) return message.warning('时段结束时间需晚于起始时间');
+    if (parseTime(p.startHour) < settings.startHour || parseTime(p.endHour) > settings.endHour) {
+      return message.warning(`时段需在 ${settings.startHour}:00–${settings.endHour}:00 之间`);
+    }
+    setBusy(true);
+    try {
+      const preview = await api.batchLessons({ ...p, previewOnly: true });
+      if (!preview.planned) return message.info('当前条件下没有可生成的课程');
+      if (preview.conflicts?.length) { setBatchPreview({ payload: p, preview }); return; }
+      await doBatch(p, false);
+    } catch (e) { message.error('批量排课失败：' + e.message); }
+    finally { setBusy(false); }
+  };
+
+  // ---------- 导航 / 视图 / 导出 / 打印 ----------
+  const shift = (n) => {
+    const d = addDays(parseLocal(windowStart), n);
+    setWindowStart(fmt(viewMode === 'week' || viewMode === 'teacher' || viewMode === 'room' ? mondayOf(d) : d));
+  };
+  const changeView = (v) => {
+    setViewMode(v);
+    // 始终以当前选中日期为锚点：日视图定位到当天，其余视图定位到所在周的周一
+    const anchor = parseLocal(selectedDate);
+    setWindowStart(fmt(v === 'day' ? anchor : mondayOf(anchor)));
+  };
+  const jumpTo = (d) => {
+    if (!d) return;
+    const date = d.format('YYYY-MM-DD');
+    setSelectedDate(date);
+    setWindowStart(fmt(viewMode === 'day' ? parseLocal(date) : mondayOf(parseLocal(date))));
+  };
+  const exportExcel = async () => {
+    try {
+      await api.exportLessons({
+        from: rangeFrom, to: rangeTo,
+        teacherId: filter.teacherId, classroomId: filter.classroomId, studentId: filter.studentId,
+      });
+      message.success('课表已导出（Excel 可直接打开）');
+    } catch (e) { message.error('导出失败：' + e.message); }
+  };
+
+  // ---------- 空壳课对账清理 ----------
+  const [orphan, setOrphan] = useState(null); // { loading, rows }
+  const openOrphans = async () => {
+    setOrphan({ loading: true, rows: [] });
+    try {
+      const rows = await api.lessonOrphans({ from: rangeFrom, to: rangeTo, teacherId: filter.teacherId });
+      setOrphan({ loading: false, rows: rows || [] });
+    } catch (e) {
+      setOrphan(null);
+      message.error('读取失败：' + e.message);
+    }
+  };
+  const cleanupOrphans = async () => {
+    const rows = orphan?.rows || [];
+    if (!rows.length) return;
+    setBusy(true);
+    try {
+      const r = await api.cleanupLessonOrphans(rows.map((x) => x.id));
+      message.success(`已清理 ${r.deleted || rows.length} 条空壳课，现在与小程序可约时段一致`);
+      setOrphan(null);
       load();
     } catch (e) {
-      message.error('保存失败：' + e.message);
-      load();
-    } finally { setSaving(false); }
+      message.error('清理失败：' + e.message);
+    } finally { setBusy(false); }
   };
-
-  // ---------- 快捷排课（本身即是预览，保存生成才写库） ----------
-  const buildPreview = () => {
-    const tid = Number(effTeacher || teachers[0]?.id);
-    const tname = teachers.find((t) => t.id == tid)?.name || '';
-    const sh = Number(quick.startHour.split(':')[0]);
-    const eh = Number(quick.endHour.split(':')[0]);
-    const out = [];
-    let n = 0;
-    let d = parseLocal(quick.startDate);
-    const end = parseLocal(quick.endDate);
-    while (d <= end) {
-      const dow = d.getDay();
-      if (!(quick.weekdaysOnly && (dow === 0 || dow === 6))) {
-        for (let h = sh; h < eh; h++) {
-          out.push({ kind: 'avail', id: 'pv' + (n++), slot_date: fmt(d), start_time: `${String(h).padStart(2, '0')}:00:00`, end_time: `${String(h + 1).padStart(2, '0')}:00:00`, teacher_id: tid, teacher_name: tname, course_title: null, member_name: null });
-        }
-      }
-      d = addDays(d, 1);
-    }
-    setPreview({
-      teacherId: tid, startDate: quick.startDate, endDate: quick.endDate, startHour: sh, endHour: eh, weekdaysOnly: quick.weekdaysOnly,
-      blocks: out, days: Array.from({ length: WINDOW }, (_, i) => addDays(parseLocal(quick.startDate), i)),
-    });
-  };
-  const savePreview = async () => {
-    try {
-      await api.quickSchedule({
-        teacherId: preview.teacherId, startDate: preview.startDate, endDate: preview.endDate,
-        startHour: preview.startHour, endHour: preview.endHour, weekdaysOnly: preview.weekdaysOnly,
-      });
-      setPreview(null);
-      setWindowStart(fmt(addDays(parseLocal(preview.startDate), -4)));
-      setSelected(preview.startDate);
-      setQuick((q) => ({ ...q, msg: '已生成可约时段' }));
-      load();
-    } catch (e) { message.error('生成失败：' + e.message); }
-  };
-
-  const teacherOptions = teachers.map((t) => ({ value: t.id, label: t.name }));
-  const roomOptions = classrooms.filter((r) => r.status !== 0).map((r) => ({ value: r.id, label: r.name }));
 
   // ---------- 教室管理 ----------
   const reloadRooms = () => api.classrooms().then(setClassrooms).catch(() => {});
   const addRoom = async () => {
     const name = newRoomName.trim();
     if (!name) return;
-    try {
-      await api.createClassroom({ name });
-      setNewRoomName('');
-      reloadRooms();
-      message.success('已添加教室');
-    } catch (e) { message.error(e.message); }
+    try { await api.createClassroom({ name }); setNewRoomName(''); reloadRooms(); message.success('已添加教室'); }
+    catch (e) { message.error(e.message); }
   };
   const removeRoom = async (r) => {
-    try {
-      await api.deleteClassroom(r.id);
-      reloadRooms();
-      message.success(`已删除「${r.name}」，相关排课的教室已清空`);
-    } catch (e) { message.error(e.message); }
+    try { await api.deleteClassroom(r.id); reloadRooms(); message.success(`已删除「${r.name}」`); }
+    catch (e) { message.error(e.message); }
   };
 
+  const teacherOptions = teachers.map((t) => ({ value: t.id, label: t.name }));
+  const roomOptions = classrooms.filter((r) => r.status !== 0).map((r) => ({ value: r.id, label: r.name }));
+  const courseOptions = courses.map((c) => ({ value: c.id, label: `${c.title}${c.duration_min ? ` · ${c.duration_min}min` : ''}` }));
+  const memberOptions = members.map((m) => ({ value: m.id, label: m.name }));
+  const allWeek = quick.weekdays.length === 7;
+  const someWeek = quick.weekdays.length > 0 && !allWeek;
+  const hourOptions = Array.from({ length: 25 }, (_, h) => ({ value: h, label: `${String(h).padStart(2, '0')}:00` }));
+
   return (
-    <>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>排课管理</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        {HOUR_START}:00–{HOUR_END}:00 课程表 · <b>所有编辑先记草稿，只有点击「保存全部」才写入数据库</b>
-        {canEdit && <> · 单击空白处新增 1 小时，按住上下拖动自选范围 · 拖动块上/下边界改时段 · 悬停点 × 标记删除</>}
-      </Typography.Paragraph>
-
-      {/* 顶部排课设置 */}
-      <div className="panel" style={{ padding: 16, marginBottom: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 12 }}>
-        {isAdmin && (
-          <div className="field"><label>教师（排课对象）</label>
-            <Select style={{ width: '100%' }} allowClear placeholder="全部教师" value={teacherId || undefined}
-              onChange={(v) => setTeacherId(v || '')} options={teacherOptions} />
+    <div className="sc-page">
+      {/* 标题行 */}
+      <div className="sc-head-bar sc-noprint">
+        <div>
+          <Typography.Title level={4} style={{ margin: 0 }}>排课管理</Typography.Title>
+          <div className="sc-subtitle">
+            课程表 {settings.startHour}:00–{settings.endHour}:00 ·{' '}
+            {editing
+              ? '编辑中：单击空白处新建、拖拽拉出时段、拖动课块移动、拖边缘改时长、右键更多操作'
+              : '当前为只读查看模式，点击课表工具栏「编辑课表」后可调整课程'}
           </div>
-        )}
-        <div className="field"><label>开始日期</label>
-          <AntDatePicker style={{ width: '100%' }} value={quick.startDate ? dayjs(quick.startDate) : null}
-            onChange={(d) => setQuick({ ...quick, startDate: d ? d.format('YYYY-MM-DD') : '' })} />
         </div>
-        <div className="field"><label>结束日期</label>
-          <AntDatePicker style={{ width: '100%' }} value={quick.endDate ? dayjs(quick.endDate) : null}
-            onChange={(d) => setQuick({ ...quick, endDate: d ? d.format('YYYY-MM-DD') : '' })} />
-        </div>
-        <div className="field"><label>起始时间</label>
-          <TimePicker style={{ width: '100%' }} format="HH:mm" value={quick.startHour ? toDayjs(parseTime(quick.startHour)) : null}
-            onChange={(d) => setQuick({ ...quick, startHour: d ? d.format('HH:mm') : '10:00' })} />
-        </div>
-        <div className="field"><label>结束时间</label>
-          <TimePicker style={{ width: '100%' }} format="HH:mm" value={quick.endHour ? toDayjs(parseTime(quick.endHour)) : null}
-            onChange={(d) => setQuick({ ...quick, endHour: d ? d.format('HH:mm') : '21:00' })} />
-        </div>
-        <div style={{ alignSelf: 'end', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Checkbox checked={quick.weekdaysOnly} onChange={(e) => setQuick({ ...quick, weekdaysOnly: e.target.checked })}>仅工作日</Checkbox>
-        </div>
-        <div style={{ alignSelf: 'end', display: 'flex', gap: 8 }}>
-          <Button type="primary" onClick={buildPreview}>⚡ 快捷排课（预览）</Button>
-          <Button onClick={() => setRoomMgr(true)}>🏠 教室</Button>
-          <Button onClick={() => api.downloadSchedule(quick.startDate, quick.endDate, effTeacher || undefined)}>⬇ 导出课表</Button>
-        </div>
-        {quick.msg && <div className="page-sub" style={{ margin: 0, gridColumn: '1 / -1' }}>{quick.msg}</div>}
       </div>
 
-      {/* 顶部工具条 */}
-      <div className="sched-top">
-        <Button icon={<LeftOutlined />} onClick={() => shift(-WINDOW)} />
-        <Button icon={<RightOutlined />} onClick={() => shift(WINDOW)} />
-        <AntDatePicker
-          allowClear={false}
-          format="YYYY年M月D日"
-          value={dayjs(selected)}
-          onChange={(d) => { if (d) { setWindowStart(fmt(addDays(d.toDate(), -4))); setSelected(fmt(d.toDate())); } }}
-        />
-        <span className="page-sub" style={{ margin: 0 }}>点击表头日期可定位 · 当前选中 {selected}{loading ? ' · 加载中…' : ''}</span>
-      </div>
-
-      {/* 新增时段草稿条（松手后选区已经变成网格里的虚线块，这里可继续微调） */}
-      {activeCreate && (
-        <div className="draft-bar create-bar">
-          <span>新增时段草稿 <b>{activeCreate.slot_date}</b>（网格中虚线块）</span>
-          <TimePicker format="HH:mm" allowClear={false}
-            value={toDayjs(activeCreate.start)}
-            onChange={(d) => d && updateCreate(activeCreate.cid, { start: clampHour(parseTime(d.format('HH:mm'))) })} />
-          <span>至</span>
-          <TimePicker format="HH:mm" allowClear={false}
-            value={toDayjs(activeCreate.end)}
-            onChange={(d) => d && updateCreate(activeCreate.cid, { end: clampHour(parseTime(d.format('HH:mm'))) })} />
-          {isAdmin ? (
-            <Select style={{ width: 140 }} value={activeCreate.teacher_id ?? undefined} placeholder="选择教师" options={teacherOptions}
-              onChange={(v) => updateCreate(activeCreate.cid, { teacher_id: v })} />
-          ) : (
-            <Tag color="gold">{teacherName(activeCreate.teacher_id) || '本人'}</Tag>
+      {/* 区域 A：批量循环排课表单 */}
+      <div className="sc-quick sc-noprint">
+        <div className="sc-quick-title"><b>批量循环排课</b><span>按日期范围 + 重复星期 + 固定时段生成系列课，多教室按顺序循环分配</span></div>
+        <div className="sc-quick-fields">
+          {isAdmin && (
+            <div className="sc-qf"><label>上课教师</label>
+              <Select placeholder="选择教师" options={teacherOptions} value={quick.teacherId}
+                onChange={(v) => setQuick({ ...quick, teacherId: v })} />
+            </div>
           )}
-          <Select style={{ width: 130 }} value={activeCreate.classroom_id ?? undefined} placeholder="选择教室" allowClear
-            options={roomOptions}
-            onChange={(v) => updateCreate(activeCreate.cid, { classroom_id: v ?? null })} />
-          <Button type="primary" size="small" onClick={() => setActiveCid(null)}>完成</Button>
-          <Button size="small" danger onClick={() => markDelete({ kind: 'new', cid: activeCreate.cid })}>撤销新增</Button>
+          {!isAdmin && (
+            <div className="sc-qf"><label>上课教师</label>
+              <Input disabled value={teachers.find((t) => t.id === myTeacherId)?.name || '本人'} title="教师账号只能排自己的课程" />
+            </div>
+          )}
+          <div className="sc-qf"><label>课程</label>
+            <Select placeholder="选择课程" options={courseOptions} value={quick.courseId}
+              onChange={(v) => setQuick({ ...quick, courseId: v })} />
+          </div>
+          <div className="sc-qf wide"><label>教室（多选 · 循环分配）</label>
+            <Select mode="multiple" allowClear placeholder="选择教室" options={roomOptions} value={quick.roomIds}
+              onChange={(v) => setQuick({ ...quick, roomIds: v })} />
+          </div>
+          <div className="sc-qf"><label>开始日期</label>
+            <DatePicker style={{ width: '100%' }} value={quick.startDate ? dayjs(quick.startDate) : null}
+              onChange={(d) => setQuick({ ...quick, startDate: d ? d.format('YYYY-MM-DD') : '' })} />
+          </div>
+          <div className="sc-qf"><label>结束日期</label>
+            <DatePicker style={{ width: '100%' }} value={quick.endDate ? dayjs(quick.endDate) : null}
+              onChange={(d) => setQuick({ ...quick, endDate: d ? d.format('YYYY-MM-DD') : '' })} />
+          </div>
+          <div className="sc-qf wide"><label>每周重复星期（多选）</label>
+            <Select mode="multiple" style={{ width: '100%' }} placeholder="选择重复星期"
+              maxTagCount="responsive" options={WEEK_SELECT_OPTIONS} value={quick.weekdays}
+              onChange={(v) => setQuick({ ...quick, weekdays: v })}
+              popupRender={(menu) => (
+                <>
+                  <div className="sc-week-select-all" onMouseDown={(e) => e.preventDefault()}>
+                    <Checkbox indeterminate={someWeek} checked={allWeek}
+                      onChange={(e) => setQuick({ ...quick, weekdays: e.target.checked ? ALL_WEEK : [] })}>
+                      全选（每天）
+                    </Checkbox>
+                    <span className="sc-week-count">{quick.weekdays.length}/7 天</span>
+                  </div>
+                  {menu}
+                </>
+              )} />
+          </div>
+          <div className="sc-qf"><label>时段起始</label>
+            <TimePicker style={{ width: '100%' }} format="HH:mm" needConfirm={false} minuteStep={30}
+              value={quick.startHour ? toDayjs(parseTime(quick.startHour)) : null}
+              disabledTime={() => ({ disabledHours: () => [
+                ...Array.from({ length: settings.startHour }, (_, i) => i),
+                ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
+              ] })}
+              onChange={(d) => setQuick({ ...quick, startHour: d ? d.format('HH:mm') : '09:00' })} />
+          </div>
+          <div className="sc-qf"><label>时段结束</label>
+            <TimePicker style={{ width: '100%' }} format="HH:mm" needConfirm={false} minuteStep={30}
+              value={quick.endHour ? toDayjs(parseTime(quick.endHour)) : null}
+              disabledTime={() => ({ disabledHours: () => [
+                ...Array.from({ length: settings.startHour }, (_, i) => i),
+                ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
+              ] })}
+              onChange={(d) => setQuick({ ...quick, endHour: d ? d.format('HH:mm') : '10:00' })} />
+          </div>
+          <div className="sc-qf wide"><label>上课学生（可选）</label>
+            <Select mode="multiple" allowClear showSearch optionFilterProp="label" maxTagCount="responsive"
+              placeholder="搜索并选择学生" options={memberOptions} value={quick.studentIds}
+              onChange={(v) => setQuick({ ...quick, studentIds: v })} />
+          </div>
+          <div className="sc-qf"><label>备注（可选）</label>
+            <Input placeholder="如：带教材" value={quick.remark}
+              onChange={(e) => setQuick({ ...quick, remark: e.target.value })} />
+          </div>
+          <div className="sc-qf"><label>课程状态</label>
+            <Select options={LESSON_STATUS.map((s) => ({ value: s.value, label: s.label }))}
+              value={quick.status} onChange={(v) => setQuick({ ...quick, status: v })} />
+          </div>
+        </div>
+        <div className="sc-quick-actions">
+          <Button type="primary" icon={<PlusOutlined />} loading={busy} onClick={applyQuick}>快捷排课</Button>
+          <Button onClick={() => setRoomMgr(true)}>教室管理</Button>
+          <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出课表</Button>
+          <Button onClick={openOrphans}>清理空壳课</Button>
+          <span className="sc-quick-note">生成前自动预检教师 / 教室冲突，冲突可逐条跳过</span>
+        </div>
+      </div>
+
+      {/* 冲突汇总条 */}
+      {conflictCount > 0 && settings.showConflictBar !== false && (
+        <div className="sc-alert sc-noprint">
+          <span>⚠ 当前视图内有 <b>{conflictCount}</b> 处冲突（同一教师或同一教室在同一时段重复占用，课程名不参与判定）</span>
+          <Button size="small" type="link" onClick={() => setConflictModal(true)}>查看冲突明细</Button>
         </div>
       )}
 
-      {/* 统一草稿保存条 */}
-      {pendingCount > 0 && (
-        <div className="draft-bar">
-          <span>待保存草稿：<b>{createCount}</b> 新增 / <b>{changeCount}</b> 修改 / <b>{deleteCount}</b> 删除 —— 目前<b>均未写入数据库</b></span>
-          {overwritePreview > 0 && <Tag color="volcano">将覆盖 {overwritePreview} 个已有时段（保存后删除，视为需重排）</Tag>}
-          <Button type="primary" size="small" loading={saving} onClick={saveAll}>保存全部</Button>
-          <Button size="small" onClick={resetDrafts}>撤销全部</Button>
+      {/* 工具栏 */}
+      <div className="sc-toolbar sc-noprint">
+        <Space size={4}>
+          <Button icon={<LeftOutlined />} onClick={() => shift(-(viewMode === 'day' ? 1 : 7))} title="上一区间" />
+          <Button icon={<RightOutlined />} onClick={() => shift(viewMode === 'day' ? 1 : 7)} title="下一区间" />
+          <DatePicker allowClear={false} format="YYYY年M月D日" style={{ width: 158 }}
+            value={dayjs(selectedDate)} onChange={jumpTo} />
+        </Space>
+        <Segmented value={viewMode} onChange={changeView} options={[
+          { label: '周视图', value: 'week' }, { label: '日视图', value: 'day' },
+          { label: '教师视图', value: 'teacher' }, { label: '教室视图', value: 'room' },
+        ]} />
+        <div className="sc-filters">
+          {isAdmin && (
+            <Select allowClear placeholder="按教师筛选" style={{ width: 130 }} options={teacherOptions}
+              value={filter.teacherId} onChange={(v) => setFilter({ ...filter, teacherId: v })} />
+          )}
+          {!isAdmin && <span className="sc-filter-self">本人课表 · {teachers.find((t) => t.id === myTeacherId)?.name || '我'}</span>}
+          <Select allowClear placeholder="按教室筛选" style={{ width: 130 }} options={roomOptions}
+            value={filter.classroomId} onChange={(v) => setFilter({ ...filter, classroomId: v })} />
+          <Select allowClear showSearch optionFilterProp="label" placeholder="按学生筛选" style={{ width: 140 }}
+            options={memberOptions} value={filter.studentId}
+            onChange={(v) => setFilter({ ...filter, studentId: v })} />
         </div>
-      )}
+        <div className="sc-toolbar-actions">
+          <Space size={4}>
+            <Tooltip title="导出 Excel"><Button icon={<DownloadOutlined />} onClick={exportExcel} /></Tooltip>
+            <Tooltip title="打印课表"><Button icon={<PrinterOutlined />} onClick={() => window.print()} /></Tooltip>
+            <Tooltip title="课表设置"><Button icon={<SettingOutlined />} onClick={() => setSettingsModal(true)} /></Tooltip>
+          </Space>
+          <div className="sc-edit-group">
+            {!editing ? (
+              <Button type="primary" icon={<EditOutlined />} onClick={enterEdit} disabled={!canEdit || busy}>
+                编辑课表
+              </Button>
+            ) : (
+              <>
+                <Button icon={<CloseOutlined />} onClick={cancelEdit} disabled={busy}
+                  title={changes ? `放弃本次 ${changes} 处改动，回到进入编辑前的状态` : '退出编辑，不保留改动'}>
+                  取消编辑
+                </Button>
+                <Button type="primary" icon={<CheckOutlined />} onClick={finishEdit} disabled={busy}
+                  title="保留本次编辑的全部改动并退出编辑">
+                  完成编辑
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+        <span className="sc-toolbar-info">
+          {rangeFrom} ~ {rangeTo} · {displayLessons.length} 节课{loading ? ' · 加载中…' : ''}
+        </span>
+      </div>
 
-      {/* 主课程表 */}
-      <ScheduleGrid
-        days={days} blocks={displayBlocks} canModify={canModify} drafts={drafts}
-        selection={selection} defaultTeacherId={defaultTeacherId} classrooms={classrooms}
-        onBlockClick={openEditor} onResizeStart={startResize} onDelete={markDelete} onRestore={restore}
-        onLanePointerDown={startSelect}
-        scrollRef={scrollRef} selected={selected} onSelectDay={scrollToDay} onScroll={onScroll}
+      {/* 区域 B：课表画布 */}
+      <ScheduleCanvas
+        days={days} lessons={displayLessons} allLessons={lessons} settings={settings} viewMode={viewMode}
+        editable={editing && canEdit} selectedDate={selectedDate}
+        teachers={teachers} classrooms={classrooms} conflicts={conflicts}
+        studentHints={studentHints} scrollRef={scrollRef}
+        pendingNew={editor?.lesson ? null : pendingNew} pendingRemoveIds={pendingRemoveIds}
+        draftDefaults={draftDefaults}
+        onBlank={openNew} onEdit={openEdit} onMove={handleMove} onResize={handleResize}
+        onDelete={handleDelete} onContext={(lesson, x, y) => setCtx({ lesson, x, y })}
+        onSelectDate={(d) => setSelectedDate(d)}
       />
 
-      {/* 快捷排课预览 */}
-      {preview && (
-        <div className="preview-wrap">
-          <Typography.Title level={5}>快捷排课预览（未保存）</Typography.Title>
-          <Typography.Paragraph type="secondary">共生成 {preview.blocks.length} 个可约时段，确认无误后点击「保存生成」写入课表。</Typography.Paragraph>
-          <Space style={{ marginTop: 8, marginBottom: 8 }}>
-            <Button type="primary" onClick={savePreview}>保存生成</Button>
-            <Button onClick={() => setPreview(null)}>取消</Button>
-          </Space>
-          <ScheduleGrid days={preview.days} blocks={preview.blocks} canModify={() => false} defaultTeacherId={preview.teacherId} />
+      {/* 右键快捷菜单 */}
+      {ctx && (
+        <div className="sc-ctx" style={{ left: Math.min(ctx.x, window.innerWidth - 160), top: Math.min(ctx.y, window.innerHeight - 130) }}
+          onClick={(e) => e.stopPropagation()}>
+          <div className="sc-ctx-title">{ctx.lesson.title || '未命名课程'}</div>
+          <button onClick={() => openEdit(ctx.lesson)}>✎ 编辑课程</button>
+          <button onClick={() => handleDuplicate(ctx.lesson)}>⧉ 复制课程</button>
+          <button className="danger" onClick={() => handleDelete(ctx.lesson)}>✕ 删除课程</button>
         </div>
       )}
 
-      {/* 编辑块弹窗：只写草稿 */}
-      <Modal
-        open={!!editor}
-        title="编辑时段（记入草稿）"
-        okText="记入草稿" cancelText="取消"
-        onOk={stageEditor} onCancel={() => setEditor(null)}
-        okButtonProps={{ disabled: !!editor && editor.end <= editor.start }}
-      >
-        {editor && (
+      {/* 新建 / 编辑弹窗 */}
+      {editor && (
+        <LessonModal key={editorKey} open meta={editorMeta} lesson={editor.lesson}
+          initial={editor.initial} seriesCount={seriesCount} busy={busy}
+          replaceCount={editor.lesson ? 0 : (pendingNew?.removeIds?.length || 0)}
+          draftClash={editor.lesson ? null : draftClash}
+          onFormChange={editor.lesson ? undefined : onDraftChange}
+          onCancel={closeEditor} onSubmit={submitEditor}
+          onDelete={handleDelete} onDeleteSeries={handleDeleteSeries} />
+      )}
+
+      {/* 空壳课清理：网站自建、无学生、无系列、小程序里也没有对应可约时段 */}
+      <Modal open={!!orphan} title="清理空壳课" width={640}
+        okText={`清理 ${orphan?.rows?.length || 0} 条`} cancelText="取消"
+        okButtonProps={{ danger: true, disabled: !orphan?.rows?.length, loading: busy }}
+        onOk={cleanupOrphans} onCancel={() => setOrphan(null)}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          下面是「网站自建、没有学生、不属于循环系列」的课，小程序「可约时段」里没有对应记录，
+          这就是两边数量对不上的原因。清理只删这些占位课，不会动小程序的可约时段和学员预约。
+        </Typography.Paragraph>
+        {orphan?.loading ? <div style={{ padding: 12 }}>读取中…</div>
+          : (orphan?.rows?.length ? (
+            <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 6 }}>
+              {orphan.rows.map((r) => (
+                <div key={r.id} style={{
+                  display: 'flex', gap: 10, padding: '8px 12px',
+                  borderBottom: '1px solid #f5f5f5', fontSize: 13,
+                }}>
+                  <span style={{ width: 96, color: '#555' }}>{r.slot_date}</span>
+                  <span style={{ width: 104, fontWeight: 600 }}>
+                    {String(r.start_time).slice(0, 5)}–{String(r.end_time).slice(0, 5)}
+                  </span>
+                  <span style={{ flex: 1, color: '#666' }}>
+                    {r.teacher_name || '未指定教师'} · {r.classroom_name || '未指定教室'}
+                  </span>
+                  <span style={{ color: '#999' }}>{r.title || '未命名'}</span>
+                </div>
+              ))}
+            </div>
+          ) : <div style={{ padding: 12, color: '#888' }}>没有需要清理的空壳课，两边已经一致。</div>)}
+      </Modal>
+
+      {/* 批量排课冲突预检 */}
+      <Modal open={!!batchPreview} title="批量排课冲突预检" width={620}
+        okText="生成（按规则处理冲突）" cancelText="取消本次批量排课"
+        okButtonProps={{ danger: true, loading: busy }}
+        onOk={() => doBatch(batchPreview.payload, true).catch(() => {})}
+        onCancel={() => setBatchPreview(null)}>
+        {batchPreview && (
           <>
-            {isAdmin && (
-              <div className="field"><label>教师</label>
-                <Select style={{ width: '100%' }} value={editor.teacherId || undefined} placeholder="未指定"
-                  options={teacherOptions} onChange={(v) => setEditor({ ...editor, teacherId: v ?? '', dirty: true })} />
-              </div>
-            )}
-            <div className="field"><label>教室</label>
-              <Select style={{ width: '100%' }} allowClear placeholder="未指定教室" value={editor.classroomId || undefined}
-                options={roomOptions} onChange={(v) => setEditor({ ...editor, classroomId: v ?? '', dirty: true })} />
+            <p>计划生成 <b>{batchPreview.preview.planned}</b> 节课，其中 <b>{new Set(batchPreview.preview.conflicts.map((c) => c.index)).size}</b> 节与已有课程冲突：</p>
+            <div className="sc-conflict-table">
+              {batchPreview.preview.conflicts.slice(0, 30).map((c, i) => {
+                const isSelf = String(c.withTeacherId) === String(c.candidateTeacherId);
+                return (
+                  <div key={i} className="sc-conflict-row">
+                    <b>{c.date} {c.week}</b><span>{c.time}</span>
+                    <Tag color={isSelf ? 'green' : 'orange'}>{isSelf ? '本人·可替换' : '教室被占'}</Tag>
+                    <span>{c.detail}</span>
+                  </div>
+                );
+              })}
+              {batchPreview.preview.conflicts.length > 30 && <div className="sc-hint">… 另有 {batchPreview.preview.conflicts.length - 30} 条</div>}
             </div>
-            <div className="field"><label>开始时间</label>
-              <TimePicker style={{ width: '100%' }} format="HH:mm"
-                value={toDayjs(editor.start)}
-                onChange={(d) => setEditor({ ...editor, start: clampHour(parseTime(d ? d.format('HH:mm') : '06:00')), dirty: true })} />
-            </div>
-            <div className="field"><label>结束时间</label>
-              <TimePicker style={{ width: '100%' }} format="HH:mm"
-                value={toDayjs(editor.end)}
-                onChange={(d) => setEditor({ ...editor, end: clampHour(parseTime(d ? d.format('HH:mm') : '07:00')), dirty: true })} />
-            </div>
-            <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
-              也可直接拖动块的上 / 下边界调整时间。所有改动都要在页面点击「保存全部」后才会生效。
-            </Typography.Paragraph>
+            <p className="sc-hint">「生成」会跳过教室被占用的节，并自动替换同一教师时段重叠的旧课；「取消」不写入任何数据。</p>
           </>
         )}
       </Modal>
+
+      {/* 冲突汇总明细：按「冲突域」列出（同教师/同教室 + 同时段 = 一处） */}
+      <Modal open={conflictModal} title="当前视图冲突明细（按教师 / 教室 + 时段合并）" width={680} footer={null}
+        onCancel={() => setConflictModal(false)}>
+        {conflictRows.length === 0 && <Empty description="暂无冲突" />}
+        {conflictRows.map((d) => (
+          <div key={d.key} className="sc-conflict-row" style={{ display: 'block', padding: '10px 12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <b>{d.date} {weekOf(d.date)}</b>
+              <span>{hhmm(d.start)}–{hhmm(d.end)}</span>
+              <Tag color="red">{d.count} 节课重叠</Tag>
+              <span style={{ color: '#666' }}>{d.reason}</span>
+            </div>
+            <div style={{ marginTop: 6, color: '#555', fontSize: 12 }}>
+              {d.teacherName && <span>教师：{d.teacherName}　</span>}
+              {d.roomName && <span>教室：{d.roomName}</span>}
+            </div>
+            <div style={{ marginTop: 4, paddingLeft: 2 }}>
+              {d.lessons.map((l) => (
+                <div key={l.id} style={{ fontSize: 12, color: '#666', lineHeight: '20px' }}>
+                  · {hhmm(parseTime(l.start_time))}–{hhmm(parseTime(l.end_time))}
+                  　{l.title || '未命名课程'}　{l.classroom_name || '未指定教室'}
+                  {(l.students || []).length ? `　学生：${(l.students || []).map((s) => s.name).join('、')}` : ''}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </Modal>
+
       {/* 教室管理 */}
       <Modal open={roomMgr} title="教室 / 琴房管理" footer={null} onCancel={() => setRoomMgr(false)}>
         <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
@@ -726,19 +823,64 @@ export default function Schedule({ user }) {
             onChange={(e) => setNewRoomName(e.target.value)} onPressEnter={addRoom} />
           <Button type="primary" onClick={addRoom}>添加</Button>
         </Space.Compact>
-        {classrooms.length === 0 && (
-          <Typography.Paragraph type="secondary">还没有教室，先添加一间。</Typography.Paragraph>
-        )}
+        {classrooms.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有教室，先添加一间" />}
         {classrooms.map((r) => (
-          <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #f0ece2' }}>
+          <div key={r.id} className="sc-room-row">
             <span>{r.name}{Number(r.capacity) > 1 ? ` · 可容纳 ${r.capacity} 人` : ''}</span>
             <Button size="small" type="text" danger onClick={() => removeRoom(r)}>删除</Button>
           </div>
         ))}
-        <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-          删除教室会把已有排课上的教室清空（课次本身保留）。
-        </Typography.Paragraph>
       </Modal>
-    </>
+
+      {/* 课表设置：时间范围 / 布局 / 显示项 */}
+      <Modal open={settingsModal} title="课表设置" width={560} okText="保存设置" cancelText="取消"
+        onCancel={() => setSettingsModal(false)}
+        onOk={() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); setSettingsModal(false); message.success('设置已保存'); }}>
+        <div className="sc-settings">
+          <div className="sc-settings-group">时间范围</div>
+          <div className="sc-form-item"><label>每日开始时间</label>
+            <Select style={{ width: 118 }} options={hourOptions.filter((h) => h.value < settings.endHour)}
+              value={settings.startHour} onChange={(v) => setSettings({ ...settings, startHour: v })} /></div>
+          <div className="sc-form-item"><label>每日结束时间</label>
+            <Select style={{ width: 118 }} options={hourOptions.filter((h) => h.value > settings.startHour && h.value <= 23)}
+              value={settings.endHour} onChange={(v) => setSettings({ ...settings, endHour: v })} /></div>
+
+          <div className="sc-settings-group sc-span2">布局</div>
+          <div className="sc-form-item sc-toggle"><label>拖拽吸附到 30 分钟网格</label>
+            <Switch checked={settings.snap !== false} onChange={(v) => setSettings({ ...settings, snap: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>同一天按教师拆分独立时间线</label>
+            <Switch checked={settings.splitByTeacher !== false}
+              onChange={(v) => setSettings({ ...settings, splitByTeacher: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>显示右侧第二时间刻度</label>
+            <Switch checked={settings.showRuler !== false}
+              onChange={(v) => setSettings({ ...settings, showRuler: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>紧凑课块（隐藏学生与时间行）</label>
+            <Switch checked={!!settings.dense} onChange={(v) => setSettings({ ...settings, dense: v })} /></div>
+
+          <div className="sc-settings-group sc-span2">显示内容</div>
+          <div className="sc-form-item sc-toggle"><label>课块上显示学生姓名</label>
+            <Switch checked={settings.showStudents} onChange={(v) => setSettings({ ...settings, showStudents: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>高亮冲突课程</label>
+            <Switch checked={settings.showConflicts !== false}
+              onChange={(v) => setSettings({ ...settings, showConflicts: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>显示循环 / 状态标记</label>
+            <Switch checked={settings.showBadges !== false}
+              onChange={(v) => setSettings({ ...settings, showBadges: v })} /></div>
+          <div className="sc-form-item sc-toggle"><label>顶部显示冲突汇总条</label>
+            <Switch checked={settings.showConflictBar !== false}
+              onChange={(v) => setSettings({ ...settings, showConflictBar: v })} /></div>
+
+          <div className="sc-form-item sc-span2 sc-hint">
+            时间范围默认为 7:00–21:00，可按机构作息调整；以上设置保存在本机浏览器。
+          </div>
+        </div>
+      </Modal>
+
+      {/* 打印页眉（仅打印时可见） */}
+      <div className="sc-print-head">
+        <h2>课程表</h2>
+        <div>{rangeFrom} ~ {rangeTo} · {settings.startHour}:00–{settings.endHour}:00 · 共 {displayLessons.length} 节课</div>
+      </div>
+    </div>
   );
 }

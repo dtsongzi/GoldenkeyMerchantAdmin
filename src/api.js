@@ -78,6 +78,43 @@ export const api = {
   createScheduleBlock: (body) => request('/admin/schedule', { method: 'POST', body: JSON.stringify(body) }),
   quickSchedule: (body) => request('/admin/quick-schedule', { method: 'POST', body: JSON.stringify(body) }),
 
+  // 排课管理：课程实例（独立于可约时段，支持学生/备注/状态/循环系列/冲突预检）
+  lessons: (query = {}) => request('/admin/lessons' + qs(query)),
+  createLesson: (body) => request('/admin/lessons', { method: 'POST', body: JSON.stringify(body) }),
+  updateLesson: (id, body) => request(`/admin/lessons/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteLesson: (id) => request(`/admin/lessons/${id}`, { method: 'DELETE' }),
+  duplicateLesson: (id) => request(`/admin/lessons/${id}/duplicate`, { method: 'POST' }),
+  batchLessons: (body) => request('/admin/lessons/batch', { method: 'POST', body: JSON.stringify(body) }),
+  lessonConflicts: (body) => request('/admin/lessons/conflicts', { method: 'POST', body: JSON.stringify(body) }),
+  updateLessonSeries: (seriesId, body) =>
+    request(`/admin/lessons/series/${encodeURIComponent(seriesId)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteLessonSeries: (seriesId) =>
+    request(`/admin/lessons/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' }),
+  restoreLessons: (body) => request('/admin/lessons/restore', { method: 'POST', body: JSON.stringify(body) }),
+  // 空壳课（网站自建、无学生、无系列）：小程序里没有对应可约时段，用于对账清理
+  lessonOrphans: (query = {}) => request('/admin/lessons/orphans' + qs(query)),
+  cleanupLessonOrphans: (ids) =>
+    request('/admin/lessons/orphans/cleanup', { method: 'POST', body: JSON.stringify({ ids }) }),
+  // 批量删除：复用 restore 的「空快照」语义（只给 ids、不传 lessons，事务内删除课程及学生关联）
+  deleteLessons: (ids) => request('/admin/lessons/restore', {
+    method: 'POST', body: JSON.stringify({ ids, lessons: [] }),
+  }),
+  exportLessons: async (query = {}) => {
+    const token = localStorage.getItem('gk_token');
+    const res = await fetch(`${BASE}/admin/lessons/export${qs(query)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) { clearSessionAndRedirect(); throw new Error('登录已失效，请重新登录'); }
+    if (!res.ok) throw new Error('导出失败');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `课表_${query.from || ''}_${query.to || ''}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
   // 教室 / 琴房
   classrooms: () => request('/admin/classrooms'),
   createClassroom: (body) => request('/admin/classrooms', { method: 'POST', body: JSON.stringify(body) }),
