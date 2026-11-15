@@ -1,5 +1,11 @@
 name: Deploy GoldenKey Merchant Admin to ECS
 
+# 触发：push 到 master（或手动 Run workflow）
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   ECS_HOST / ECS_USER / ECS_SSH_KEY（私钥全文）/ ECS_PORT（可选，默认 22）
+# 服务器前置条件：nginx；静态产物落到 /opt/GoldenKeyAdmin，
+# 站点配置见 deploy/nginx.goldenkey.conf（首次部署自动安装，已存在则不覆盖）。
 on:
   push:
     branches: [master]
@@ -22,6 +28,25 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # 缺 secrets 时直接给出清单，而不是让 scp 抛一句 Could not resolve hostname
+      - name: Preflight deploy secrets
+        env:
+          SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          R_HOST: ${{ secrets.ECS_HOST }}
+          R_USER: ${{ secrets.ECS_USER }}
+        run: |
+          set -e
+          missing=""
+          check() { [ -n "$2" ] || missing="$missing $1"; }
+          check ECS_SSH_KEY "$SSH_KEY"
+          check ECS_HOST "$R_HOST"
+          check ECS_USER "$R_USER"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 secrets:$missing（Settings → Secrets and variables → Actions 里补上）"
+            exit 1
+          fi
+          echo "secrets 齐备"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
