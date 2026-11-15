@@ -20,7 +20,6 @@ concurrency:
 env:
   NODE_VERSION: '20'
   DEPLOY_PATH: '/opt/GoldenKeyAdmin'
-  NGINX_CONF: '/etc/nginx/conf.d/goldenkey-admin.conf'
 
 jobs:
   build-and-deploy:
@@ -117,7 +116,6 @@ jobs:
           set -eo pipefail
           export PATH="$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
-          NGINX_CONF="${{ env.NGINX_CONF }}"
           STAGE="$(mktemp -d /tmp/gk-admin-XXXXXX)"
           trap 'rm -rf "$STAGE"' EXIT
 
@@ -132,56 +130,57 @@ jobs:
           chmod -R 755 "$DEPLOY_PATH"
           echo "Admin deploy OK: $DEPLOY_PATH"
 
-          # nginx 站点：以仓库里的 deploy/nginx.goldenkey.conf 为准，
-          # 内容有变化就覆盖（覆盖前备份、nginx -t 不过就回滚）
+          # nginx 站点：以仓库里的 deploy/nginx.goldenkey.conf 为准。
+          # 各面板/发行版的 vhost 包含目录不同（宝塔是 /www/server/panel/vhost/nginx，
+          # Debian 系是 /etc/nginx/conf.d 或 sites-enabled），逐个试：
+          # 写进去 → nginx -t 校验（不过就回滚）→ reload → 看 8088 是否真的响应，成功即停。
           if command -v nginx >/dev/null 2>&1; then
             SUDO=""
             if [ "$(id -u)" != "0" ]; then SUDO="sudo -n"; fi
             DESIRED="$DEPLOY_PATH/nginx.goldenkey.conf"
-            if $SUDO test -d /etc/nginx/conf.d 2>/dev/null; then
-              if [ ! -f "$NGINX_CONF" ] || ! cmp -s "$DESIRED" "$NGINX_CONF"; then
-                $SUDO cp "$NGINX_CONF" /tmp/goldenkey-admin.conf.bak 2>/dev/null || true
-                $SUDO cp "$DESIRED" "$NGINX_CONF"
-                if $SUDO nginx -t 2>/dev/null; then
-                  echo "nginx 站点配置已同步：$NGINX_CONF"
-                else
-                  if [ -f /tmp/goldenkey-admin.conf.bak ]; then
-                    $SUDO cp /tmp/goldenkey-admin.conf.bak "$NGINX_CONF"
-                    echo "::error::nginx -t 未通过，已还原上一版站点配置"
-                  else
-                    $SUDO rm -f "$NGINX_CONF"
-                    echo "::error::nginx -t 未通过，已移除本次安装的站点配置"
-                  fi
-                  exit 1
-                fi
-              else
-                echo "nginx 站点配置无变化"
+            CANDIDATES="/www/server/panel/vhost/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/vhosts"
+            check_site() { curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkey/" || true; }
+            SITE_DIR=""
+            for dir in $CANDIDATES; do
+              if ! $SUDO test -d "$dir" 2>/dev/null; then continue; fi
+              target="$dir/goldenkey-admin.conf"
+              had=0
+              if $SUDO test -f "$target"; then had=1; $SUDO cp "$target" /tmp/gk-nginx-prev.bak 2>/dev/null || true; fi
+              if ! $SUDO cp "$DESIRED" "$target" 2>/dev/null; then
+                echo "· $dir 不可写，跳过"
+                continue
               fi
-              $SUDO nginx -t 2>/dev/null && {
-                if ! RELOAD_OUT=$($SUDO systemctl reload nginx 2>&1); then
-                  if ! RELOAD_OUT2=$($SUDO nginx -s reload 2>&1); then
-                    echo "::warning::nginx 重载失败：$(printf '%s | %s' "$RELOAD_OUT" "$RELOAD_OUT2" | tr '\n' ' ' | cut -c1-400)"
-                    $SUDO systemctl start nginx 2>/dev/null || true
-                  fi
-                fi
-                echo "nginx 已重载"
-              }
+              if ! $SUDO nginx -t 2>/dev/null; then
+                if [ "$had" = "1" ]; then $SUDO cp /tmp/gk-nginx-prev.bak "$target"; else $SUDO rm -f "$target"; fi
+                echo "· $dir：nginx -t 未通过，已回滚"
+                continue
+              fi
+              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
+              sleep 1
+              CODE=$(check_site)
+              if [ "$CODE" = "200" ]; then
+                SITE_DIR="$dir"
+                echo "站点已生效：$target （/goldenkey/ → 200）"
+                break
+              fi
+              echo "· $dir：写入并重载后 /goldenkey/ 返回 $CODE，继续试下一个"
+            done
+
+            if [ -n "$SITE_DIR" ]; then
+              # 清掉其它候选目录里的同名站点，避免重复 server / listen
+              for dir in $CANDIDATES; do
+                if [ "$dir" = "$SITE_DIR" ]; then continue; fi
+                $SUDO rm -f "$dir/goldenkey-admin.conf" 2>/dev/null || true
+              done
+              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
             else
-              echo "::warning::无法写入 /etc/nginx/conf.d（缺 sudo 权限？），请手动安装 deploy/nginx.goldenkey.conf"
-            fi
-            # 站点入口自检：/goldenkey/ 必须返回 200
-            NGINX_STATE=$( (command -v systemctl >/dev/null && $SUDO systemctl is-active nginx 2>/dev/null) || echo unknown)
-            LOADED=$($SUDO nginx -T 2>/dev/null | grep -c 'listen 8088' || true)
-            L8088=$( (($SUDO ss -ltn 2>/dev/null || $SUDO netstat -ltn 2>/dev/null) | grep ':8088' | tr -s ' ' | tr '\n' ';') || true)
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkey/" || true)
-            if [ "$CODE" = "200" ]; then
-              echo "站点自检通过：http://127.0.0.1:8088/goldenkey/ → 200"
-            else
-              echo "::warning::站点自检 http://127.0.0.1:8088/goldenkey/ 返回 $CODE（nginx=$NGINX_STATE，配置里 listen 8088 共 ${LOADED:-0} 处，8088 监听：${L8088:-无}）"
-              # 把 nginx 侧的真实原因也带出来，省得反复猜
+              NGINX_STATE=$( (command -v systemctl >/dev/null && $SUDO systemctl is-active nginx 2>/dev/null) || echo unknown)
+              LOADED=$($SUDO nginx -T 2>/dev/null | grep -c 'listen 8088' || true)
+              echo "::error::nginx 已在运行（$NGINX_STATE）但 8088 没有响应 /goldenkey/；配置里 listen 8088 共 ${LOADED:-0} 处"
               echo "::warning::nginx -t: $($SUDO nginx -t 2>&1 | tr '\n' '|' | cut -c1-300)"
-              echo "::warning::nginx 工作进程: $(pgrep -c nginx 2>/dev/null || echo 0)，8088 端口占用: $( ($SUDO ss -ltnp 2>/dev/null | grep ':8088' || echo 无) | tr '\n' ';' | cut -c1-200)"
-              echo "::warning::journal: $($SUDO journalctl -u nginx -n 12 --no-pager 2>&1 | tr '\n' '|' | cut -c1-700)"
+              echo "::warning::nginx 配置路径: $($SUDO nginx -T 2>/dev/null | grep -m3 -E '^# configuration file' | tr '\n' ';' | cut -c1-400)"
+              echo "::warning::8088 占用: $( ($SUDO ss -ltnp 2>/dev/null | grep ':8088' || echo 无) | tr '\n' ';' | cut -c1-200)"
+              exit 1
             fi
           else
             echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
