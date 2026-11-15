@@ -5,7 +5,7 @@ name: Deploy GoldenKey Merchant Admin to ECS
 # 需要在仓库 Settings → Secrets and variables → Actions 配置：
 #   ECS_HOST / ECS_USER / ECS_SSH_KEY（私钥全文）/ ECS_PORT（可选，默认 22）
 # 服务器前置条件：nginx；静态产物落到 /opt/GoldenKeyAdmin。
-# 访问路径：页面 /goldenkey/（构建 base=/goldenkey/），接口 /goldenkey/api/*。
+# 访问路径：页面 /goldenkeyadmin/（构建 base=/goldenkeyadmin/），接口 /goldenkey/api/*。
 # 站点配置以 deploy/nginx.goldenkey.conf 为准，内容有变化会被同步到服务器（失败自动回滚）。
 on:
   push:
@@ -65,8 +65,8 @@ jobs:
           set -e
           test -s dist/index.html
           for f in dist/assets/*.js; do node --check "$f"; done
-          # 站点挂在 /goldenkey/ 下，产物必须引用 /goldenkey/assets/（base 配错会静默 404）
-          grep -q '/goldenkey/assets/' dist/index.html || { echo "::error::index.html 未引用 /goldenkey/assets/，检查 vite.config.js 的 base"; exit 1; }
+          # 站点挂在 /goldenkeyadmin/ 下，产物必须引用 /goldenkeyadmin/assets/（base 配错会静默 404）
+          grep -q '/goldenkeyadmin/assets/' dist/index.html || { echo "::error::index.html 未引用 /goldenkeyadmin/assets/，检查 vite.config.js 的 base"; exit 1; }
           # 产物清单用于服务器侧完整性校验（CSS 可能没有，用 find 避免通配落空）
           (cd dist && { sha256sum index.html; find assets -type f \( -name '*.js' -o -name '*.css' \) -print0 | xargs -0 sha256sum; } > MANIFEST.sha256)
           echo "dist OK: $(wc -l < dist/MANIFEST.sha256 | tr -d ' ') files verified, $(du -sh dist | cut -f1)"
@@ -139,7 +139,7 @@ jobs:
             if [ "$(id -u)" != "0" ]; then SUDO="sudo -n"; fi
             DESIRED="$DEPLOY_PATH/nginx.goldenkey.conf"
             CANDIDATES="/www/server/panel/vhost/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/vhosts"
-            check_site() { curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkey/" || true; }
+            check_site() { curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkeyadmin/" || true; }
             SITE_DIR=""
             for dir in $CANDIDATES; do
               if ! $SUDO test -d "$dir" 2>/dev/null; then continue; fi
@@ -160,7 +160,7 @@ jobs:
               CODE=$(check_site)
               if [ "$CODE" = "200" ]; then
                 SITE_DIR="$dir"
-                echo "站点已生效：$target （/goldenkey/ → 200）"
+                echo "站点已生效：$target （/goldenkeyadmin/ → 200）"
                 break
               fi
               echo "· $dir：写入并重载后 /goldenkey/ 返回 $CODE，继续试下一个"

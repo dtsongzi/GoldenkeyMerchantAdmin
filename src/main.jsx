@@ -10,8 +10,9 @@ import './styles.css';
 
 dayjs.locale('zh-cn');
 
-// 站点部署在 /goldenkey/ 下，路由以它为基准（与 vite.config.js 的 base 一致）
-const BASENAME = '/goldenkey';
+// 站点路径 /goldenkeyadmin/，路由基准直接取 Vite 的 BASE_URL，
+// 和 vite.config.js 的 base 永远一致（换路径不会一边改一边忘）
+const BASENAME = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

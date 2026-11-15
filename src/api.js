@@ -1,12 +1,12 @@
-// 后端 API 封装。所有接口统一带 /goldenkey 前缀（同一个域名下还有其它应用，避免路径冲突）。
-// 开发时通过 Vite proxy 转发，生产由 nginx 反代到后端。
+// 后端 API 封装。接口统一在 /goldenkey/api 下（页面在 /goldenkeyadmin/，两者前缀不同）。
 const BASE = '/goldenkey/api';
 
 // 401 时清除失效 token 并回到登录页（自愈，避免卡在"已登录但接口全 401"）
 function clearSessionAndRedirect() {
   localStorage.removeItem('gk_token');
   localStorage.removeItem('gk_user');
-  window.location.href = '/goldenkey/';
+  // 回站点根（跟着 Vite base 走，避免写死路径）
+  window.location.href = import.meta.env.BASE_URL || '/goldenkeyadmin/';
 }
 
 async function request(path, options = {}) {
