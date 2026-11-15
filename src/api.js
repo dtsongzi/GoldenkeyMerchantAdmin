@@ -6,7 +6,7 @@ const BASE = '/goldenkey/api';
 function clearSessionAndRedirect() {
   localStorage.removeItem('gk_token');
   localStorage.removeItem('gk_user');
-  window.location.href = '/';
+  window.location.href = '/goldenkey/';
 }
 
 async function request(path, options = {}) {

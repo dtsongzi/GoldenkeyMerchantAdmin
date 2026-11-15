@@ -4,8 +4,9 @@ name: Deploy GoldenKey Merchant Admin to ECS
 #
 # 需要在仓库 Settings → Secrets and variables → Actions 配置：
 #   ECS_HOST / ECS_USER / ECS_SSH_KEY（私钥全文）/ ECS_PORT（可选，默认 22）
-# 服务器前置条件：nginx；静态产物落到 /opt/GoldenKeyAdmin，
-# 站点配置见 deploy/nginx.goldenkey.conf（首次部署自动安装，已存在则不覆盖）。
+# 服务器前置条件：nginx；静态产物落到 /opt/GoldenKeyAdmin。
+# 访问路径：页面 /goldenkey/（构建 base=/goldenkey/），接口 /goldenkey/api/*。
+# 站点配置以 deploy/nginx.goldenkey.conf 为准，内容有变化会被同步到服务器（失败自动回滚）。
 on:
   push:
     branches: [master]
@@ -65,6 +66,8 @@ jobs:
           set -e
           test -s dist/index.html
           for f in dist/assets/*.js; do node --check "$f"; done
+          # 站点挂在 /goldenkey/ 下，产物必须引用 /goldenkey/assets/（base 配错会静默 404）
+          grep -q '/goldenkey/assets/' dist/index.html || { echo "::error::index.html 未引用 /goldenkey/assets/，检查 vite.config.js 的 base"; exit 1; }
           # 产物清单用于服务器侧完整性校验（CSS 可能没有，用 find 避免通配落空）
           (cd dist && { sha256sum index.html; find assets -type f \( -name '*.js' -o -name '*.css' \) -print0 | xargs -0 sha256sum; } > MANIFEST.sha256)
           echo "dist OK: $(wc -l < dist/MANIFEST.sha256 | tr -d ' ') files verified, $(du -sh dist | cut -f1)"
@@ -72,7 +75,7 @@ jobs:
       - name: Package dist
         run: |
           set -e
-          # 带上 nginx 站点配置，首次部署时由服务器侧自动安装
+          # 带上 nginx 站点配置，服务器侧会与当前配置比对后同步
           cp deploy/nginx.goldenkey.conf dist/nginx.goldenkey.conf
           tar czf goldenkey-admin-dist.tar.gz -C dist .
           ls -lh goldenkey-admin-dist.tar.gz
@@ -129,23 +132,41 @@ jobs:
           chmod -R 755 "$DEPLOY_PATH"
           echo "Admin deploy OK: $DEPLOY_PATH"
 
-          # nginx 站点：已存在则不动，缺失则用产物里的配置初始化一次
+          # nginx 站点：以仓库里的 deploy/nginx.goldenkey.conf 为准，
+          # 内容有变化就覆盖（覆盖前备份、nginx -t 不过就回滚）
           if command -v nginx >/dev/null 2>&1; then
             SUDO=""
             if [ "$(id -u)" != "0" ]; then SUDO="sudo -n"; fi
-            if [ ! -f "$NGINX_CONF" ]; then
-              if $SUDO test -d /etc/nginx/conf.d 2>/dev/null; then
-                $SUDO cp "$DEPLOY_PATH/nginx.goldenkey.conf" "$NGINX_CONF"
-                echo "已安装 nginx 站点配置：$NGINX_CONF"
+            DESIRED="$DEPLOY_PATH/nginx.goldenkey.conf"
+            if $SUDO test -d /etc/nginx/conf.d 2>/dev/null; then
+              if [ ! -f "$NGINX_CONF" ] || ! cmp -s "$DESIRED" "$NGINX_CONF"; then
+                $SUDO cp "$NGINX_CONF" /tmp/goldenkey-admin.conf.bak 2>/dev/null || true
+                $SUDO cp "$DESIRED" "$NGINX_CONF"
+                if $SUDO nginx -t 2>/dev/null; then
+                  echo "nginx 站点配置已同步：$NGINX_CONF"
+                else
+                  if [ -f /tmp/goldenkey-admin.conf.bak ]; then
+                    $SUDO cp /tmp/goldenkey-admin.conf.bak "$NGINX_CONF"
+                    echo "::error::nginx -t 未通过，已还原上一版站点配置"
+                  else
+                    $SUDO rm -f "$NGINX_CONF"
+                    echo "::error::nginx -t 未通过，已移除本次安装的站点配置"
+                  fi
+                  exit 1
+                fi
               else
-                echo "::warning::无法写入 /etc/nginx/conf.d，请手动安装 deploy/nginx.goldenkey.conf"
+                echo "nginx 站点配置无变化"
               fi
-            fi
-            if $SUDO nginx -t 2>/dev/null; then
-              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
-              echo "nginx 已重载"
+              $SUDO nginx -t 2>/dev/null && { $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true; echo "nginx 已重载"; }
             else
-              echo "::warning::nginx -t 未通过（或缺少 sudo 权限），未重载；请检查配置"
+              echo "::warning::无法写入 /etc/nginx/conf.d（缺 sudo 权限？），请手动安装 deploy/nginx.goldenkey.conf"
+            fi
+            # 站点入口自检：/goldenkey/ 必须返回 200
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:8088/goldenkey/" || true)
+            if [ "$CODE" = "200" ]; then
+              echo "站点自检通过：http://127.0.0.1:8088/goldenkey/ → 200"
+            else
+              echo "::warning::站点自检 http://127.0.0.1:8088/goldenkey/ 返回 $CODE（若站点不在 8088 或另有反代，可忽略）"
             fi
           else
             echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
