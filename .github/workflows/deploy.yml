@@ -158,9 +158,11 @@ jobs:
                 echo "nginx 站点配置无变化"
               fi
               $SUDO nginx -t 2>/dev/null && {
-                if ! $SUDO systemctl reload nginx 2>/dev/null && ! $SUDO nginx -s reload 2>/dev/null; then
-                  echo "::warning::nginx 重载失败，尝试直接启动"
-                  $SUDO systemctl start nginx 2>/dev/null || true
+                if ! RELOAD_OUT=$($SUDO systemctl reload nginx 2>&1); then
+                  if ! RELOAD_OUT2=$($SUDO nginx -s reload 2>&1); then
+                    echo "::warning::nginx 重载失败：$(printf '%s | %s' "$RELOAD_OUT" "$RELOAD_OUT2" | tr '\n' ' ' | cut -c1-400)"
+                    $SUDO systemctl start nginx 2>/dev/null || true
+                  fi
                 fi
                 echo "nginx 已重载"
               }
@@ -169,12 +171,13 @@ jobs:
             fi
             # 站点入口自检：/goldenkey/ 必须返回 200
             NGINX_STATE=$( (command -v systemctl >/dev/null && $SUDO systemctl is-active nginx 2>/dev/null) || echo unknown)
-            LISTEN=$( ($SUDO ss -ltn 2>/dev/null || $SUDO netstat -ltn 2>/dev/null) | grep -cE ':(8088|80)[[:space:]]' || true)
+            LOADED=$($SUDO nginx -T 2>/dev/null | grep -c 'listen 8088' || true)
+            L8088=$( (($SUDO ss -ltn 2>/dev/null || $SUDO netstat -ltn 2>/dev/null) | grep ':8088' | tr -s ' ' | tr '\n' ';') || true)
             CODE=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkey/" || true)
             if [ "$CODE" = "200" ]; then
               echo "站点自检通过：http://127.0.0.1:8088/goldenkey/ → 200"
             else
-              echo "::warning::站点自检 http://127.0.0.1:8088/goldenkey/ 返回 $CODE（nginx 状态=$NGINX_STATE，监听 80/8088 的条目=$LISTEN）"
+              echo "::warning::站点自检 http://127.0.0.1:8088/goldenkey/ 返回 $CODE（nginx=$NGINX_STATE，配置里 listen 8088 共 ${LOADED:-0} 处，8088 监听：${L8088:-无}）"
             fi
           else
             echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
