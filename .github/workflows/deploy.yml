@@ -4,9 +4,10 @@ name: Deploy GoldenKey Merchant Admin to ECS
 #
 # 需要在仓库 Settings → Secrets and variables → Actions 配置：
 #   ECS_HOST / ECS_USER / ECS_SSH_KEY（私钥全文）/ ECS_PORT（可选，默认 22）
-# 服务器前置条件：nginx；静态产物落到 /opt/GoldenKeyAdmin。
-# 访问路径：页面 /goldenkeyadmin/（构建 base=/goldenkeyadmin/），接口 /goldenkey/api/*。
-# 站点配置以 deploy/nginx.goldenkey.conf 为准，内容有变化会被同步到服务器（失败自动回滚）。
+# 本工作流只负责：构建 → 校验 → 打包 → 上传 → 原子切换到 /opt/GoldenKeyAdmin。
+# nginx 由服务器上已有的宝塔配置（rongyuevideo.com.conf）负责，这里不碰 nginx：
+#   location /goldenkeyadmin  → alias /opt/GoldenKeyAdmin（页面，构建 base=/goldenkeyadmin/）
+#   location /goldenkey/api/  → proxy_pass 127.0.0.1:3001（接口）
 on:
   push:
     branches: [master]
@@ -74,8 +75,6 @@ jobs:
       - name: Package dist
         run: |
           set -e
-          # 带上 nginx 站点配置，服务器侧会与当前配置比对后同步
-          cp deploy/nginx.goldenkey.conf dist/nginx.goldenkey.conf
           tar czf goldenkey-admin-dist.tar.gz -C dist .
           ls -lh goldenkey-admin-dist.tar.gz
 
@@ -130,60 +129,8 @@ jobs:
           chmod -R 755 "$DEPLOY_PATH"
           echo "Admin deploy OK: $DEPLOY_PATH"
 
-          # nginx 站点：以仓库里的 deploy/nginx.goldenkey.conf 为准。
-          # 各面板/发行版的 vhost 包含目录不同（宝塔是 /www/server/panel/vhost/nginx，
-          # Debian 系是 /etc/nginx/conf.d 或 sites-enabled），逐个试：
-          # 写进去 → nginx -t 校验（不过就回滚）→ reload → 看 8088 是否真的响应，成功即停。
-          if command -v nginx >/dev/null 2>&1; then
-            SUDO=""
-            if [ "$(id -u)" != "0" ]; then SUDO="sudo -n"; fi
-            DESIRED="$DEPLOY_PATH/nginx.goldenkey.conf"
-            CANDIDATES="/www/server/panel/vhost/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/vhosts"
-            check_site() { curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://127.0.0.1:8088/goldenkeyadmin/" || true; }
-            SITE_DIR=""
-            for dir in $CANDIDATES; do
-              if ! $SUDO test -d "$dir" 2>/dev/null; then continue; fi
-              target="$dir/goldenkey-admin.conf"
-              had=0
-              if $SUDO test -f "$target"; then had=1; $SUDO cp "$target" /tmp/gk-nginx-prev.bak 2>/dev/null || true; fi
-              if ! $SUDO cp "$DESIRED" "$target" 2>/dev/null; then
-                echo "· $dir 不可写，跳过"
-                continue
-              fi
-              if ! $SUDO nginx -t 2>/dev/null; then
-                if [ "$had" = "1" ]; then $SUDO cp /tmp/gk-nginx-prev.bak "$target"; else $SUDO rm -f "$target"; fi
-                echo "· $dir：nginx -t 未通过，已回滚"
-                continue
-              fi
-              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
-              sleep 1
-              CODE=$(check_site)
-              if [ "$CODE" = "200" ]; then
-                SITE_DIR="$dir"
-                echo "站点已生效：$target （/goldenkeyadmin/ → 200）"
-                break
-              fi
-              echo "· $dir：写入并重载后 /goldenkey/ 返回 $CODE，继续试下一个"
-            done
-
-            if [ -n "$SITE_DIR" ]; then
-              # 清掉其它候选目录里的同名站点，避免重复 server / listen
-              for dir in $CANDIDATES; do
-                if [ "$dir" = "$SITE_DIR" ]; then continue; fi
-                $SUDO rm -f "$dir/goldenkey-admin.conf" 2>/dev/null || true
-              done
-              $SUDO systemctl reload nginx 2>/dev/null || $SUDO nginx -s reload 2>/dev/null || true
-            else
-              NGINX_STATE=$( (command -v systemctl >/dev/null && $SUDO systemctl is-active nginx 2>/dev/null) || echo unknown)
-              LOADED=$($SUDO nginx -T 2>/dev/null | grep -c 'listen 8088' || true)
-              echo "::error::nginx 已在运行（$NGINX_STATE）但 8088 没有响应 /goldenkey/；配置里 listen 8088 共 ${LOADED:-0} 处"
-              echo "::warning::nginx -t: $($SUDO nginx -t 2>&1 | tr '\n' '|' | cut -c1-300)"
-              echo "::warning::nginx 配置路径: $($SUDO nginx -T 2>/dev/null | grep -m3 -E '^# configuration file' | tr '\n' ';' | cut -c1-400)"
-              echo "::warning::8088 占用: $( ($SUDO ss -ltnp 2>/dev/null | grep ':8088' || echo 无) | tr '\n' ';' | cut -c1-200)"
-              exit 1
-            fi
-          else
-            echo "::warning::服务器未安装 nginx，静态文件已就位但不会对外提供"
-          fi
+          # 静态产物已切换，nginx 侧由 rongyuevideo.com.conf 的 alias 直接读这个目录，无需 reload
+          test -s "$DEPLOY_PATH/index.html" || { echo "::error::$DEPLOY_PATH/index.html 缺失"; exit 1; }
+          echo "页面：https://rongyuevideo.com/goldenkeyadmin/  （nginx 由服务器侧维护）"
           echo "Deploy completed at $(date '+%Y-%m-%d %H:%M:%S')"
           REMOTE
