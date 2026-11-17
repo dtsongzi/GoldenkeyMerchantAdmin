@@ -47,6 +47,8 @@ export const api = {
 
   // 教师管理（管理员）：档案 + 登录账号
   listAdminTeachers: (q = {}) => request('/admin/teachers' + qs(q)),
+  // 单条详情：含履历与照片（列表为控制体积不含 base64 照片）
+  adminTeacherDetail: (id) => request(`/admin/teachers/${id}`),
   createTeacher: (body) => request('/admin/teachers', { method: 'POST', body: JSON.stringify(body) }),
   updateTeacher: (id, body) => request(`/admin/teachers/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   resetTeacherPassword: (id, password) =>

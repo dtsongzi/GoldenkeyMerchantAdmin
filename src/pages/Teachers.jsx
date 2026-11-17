@@ -1,21 +1,103 @@
 import { useEffect, useState } from 'react';
 import {
   Table, Tag, Button, Modal, Form, Input, InputNumber, Select, Space, Typography, Card, App as AntApp,
-  Avatar, Row, Col, Tooltip,
+  Avatar, Row, Col, Tooltip, Upload, Image as AntImage,
 } from 'antd';
 import { PlusOutlined, EditOutlined, KeyOutlined, StopOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons';
 import { api } from '../api.js';
 
 // 只回填 Form 中注册过的字段，避免 setFieldsValue 传入未注册字段
-const FORM_KEYS = ['name', 'gender', 'title', 'phone', 'email', 'joined_at', 'avatar', 'bio', 'remark', 'sort', 'status', 'username', 'password'];
+const FORM_KEYS = ['name', 'gender', 'title', 'phone', 'email', 'joined_at', 'avatar', 'bio', 'resume', 'photos', 'remark', 'sort', 'status', 'username', 'password'];
 const pickFormValues = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => FORM_KEYS.includes(k)));
 
 const EMPTY = {
   name: '', gender: '女', title: '钢琴教师', phone: '', email: '', joined_at: '',
-  avatar: '', bio: '', remark: '', sort: 0, status: 1, username: '', password: '',
+  avatar: '', bio: '', resume: '', photos: '[]', remark: '', sort: 0, status: 1, username: '', password: '',
 };
 
 const genderColor = { 男: 'blue', 女: 'magenta', 保密: 'default' };
+
+/** 图片压缩为 base64 data URL：限制边长与体积，避免照片 base64 过大塞爆数据库/接口 */
+function compressToDataUrl(file, maxSide = 1200, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('图片解析失败'));
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function parsePhotos(v) {
+  if (!v) return [];
+  try {
+    const arr = JSON.parse(v);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+/** 教师照片选择器：本地压缩后以 base64 data URL 存入表单（值 = JSON 数组字符串） */
+function PhotoPicker({ value, onChange }) {
+  const { message } = AntApp.useApp();
+  const [busy, setBusy] = useState(false);
+  const list = parsePhotos(value);
+
+  const beforeUpload = (file) => {
+    const isImg = file.type && file.type.indexOf('image/') === 0;
+    if (!isImg) { message.error('只能上传图片'); return Upload.LIST_IGNORE; }
+    if (file.size > 8 * 1024 * 1024) { message.error('单张图片请小于 8MB'); return Upload.LIST_IGNORE; }
+    setBusy(true);
+    compressToDataUrl(file)
+      .then((dataUrl) => onChange(JSON.stringify(list.concat(dataUrl))))
+      .catch((e) => message.error(e.message || '处理图片失败'))
+      .finally(() => setBusy(false));
+    return Upload.LIST_IGNORE;
+  };
+
+  const remove = (idx) => onChange(JSON.stringify(list.filter((_, i) => i !== idx)));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {list.map((src, i) => (
+          <div key={i} style={{ position: 'relative', width: 96, height: 96 }}>
+            <AntImage src={src} width={96} height={96} style={{ objectFit: 'cover', borderRadius: 8 }} />
+            <Button
+              size="small" danger type="primary"
+              style={{ position: 'absolute', top: 2, right: 2, padding: '0 6px', lineHeight: '18px' }}
+              onClick={() => remove(i)}
+            >×</Button>
+          </div>
+        ))}
+        <Upload
+          accept="image/*" listType="picture-card" showUploadList={false}
+          beforeUpload={beforeUpload} disabled={busy}
+        >
+          <div style={{ fontSize: 12, color: '#888' }}>{busy ? '处理中…' : '+ 添加照片'}</div>
+        </Upload>
+      </div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        最多建议 3 张；自动压缩后以 base64 存入数据库，会展示在学员端教师介绍页。
+      </Typography.Text>
+    </div>
+  );
+}
 
 export default function Teachers() {
   const { message, modal } = AntApp.useApp();
@@ -48,7 +130,15 @@ export default function Teachers() {
   }, [pwdTarget, pwdForm]);
 
   const openNew = () => setEditing({ id: null, values: { ...EMPTY } });
-  const openEdit = (t) => setEditing({ id: t.id, values: { ...t, joined_at: t.joined_at || '' } });
+  const openEdit = (t) => {
+    // 列表不含照片（base64 体积大），编辑时按 id 取回完整档案
+    setEditing({ id: t.id, values: { ...t, joined_at: t.joined_at || '', photos: '[]' } });
+    api.adminTeacherDetail(t.id)
+      .then((d) => {
+        setEditing({ id: t.id, values: { ...d, joined_at: d.joined_at || '', photos: d.photos || '[]' } });
+      })
+      .catch(() => {}); // 取详情失败仍可编辑其它字段
+  };
 
   const save = async () => {
     const v = await form.validateFields();
@@ -278,7 +368,18 @@ export default function Teachers() {
           </Form.Item>
 
           <Form.Item label="个人简介" name="bio">
-            <Input.TextArea rows={3} maxLength={2000} showCount placeholder="教学经历、擅长方向等" />
+            <Input.TextArea rows={3} maxLength={2000} showCount placeholder="教学经历、擅长方向等（课程页简述）" />
+          </Form.Item>
+
+          <Form.Item label="个人履历介绍" name="resume">
+            <Input.TextArea
+              rows={6} maxLength={20000} showCount
+              placeholder="教育背景、获奖经历、教学理念等，展示在学员端教师介绍页"
+            />
+          </Form.Item>
+
+          <Form.Item label="教师照片" name="photos">
+            <PhotoPicker />
           </Form.Item>
 
           <Row gutter={16}>
