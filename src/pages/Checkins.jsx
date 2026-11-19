@@ -133,16 +133,20 @@ function StatsPanel({ isAdmin, teachers }) {
 
   const columns = [
     { title: '日期', dataIndex: 'date', key: 'date', width: 110 },
-    { title: '时间', key: 'time', render: (_, r) => `${String(r.start_time).slice(0, 5)}–${String(r.end_time).slice(0, 5)}` },
+    { title: '时间', key: 'time', width: 120, render: (_, r) => `${String(r.start_time).slice(0, 5)}–${String(r.end_time).slice(0, 5)}` },
     { title: '课程', dataIndex: 'title', key: 'title' },
     { title: '教师', dataIndex: 'teacher_name', key: 'teacher_name' },
-    { title: '打卡时间', dataIndex: 'checked_at', key: 'checked_at' },
+    {
+      title: '打卡状态', dataIndex: 'checked', key: 'checked', width: 100,
+      render: (v) => (v ? <Tag color="blue">已打卡</Tag> : <Tag>未打卡</Tag>),
+    },
+    { title: '打卡时间', dataIndex: 'checked_at', key: 'checked_at', render: (v) => v || '-' },
     { title: '备注', dataIndex: 'note', key: 'note', render: (v) => v || '-' },
   ];
 
   return (
     <>
-      <Typography.Paragraph type="secondary">按月查看每位教师的打卡记录与汇总；点击日历中某天可筛选打卡明细。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary">按月查看每位教师的课程与打卡汇总；点击日历中某天可查看当天全部课程（含未打卡）。</Typography.Paragraph>
       <Card size="small" style={{ marginBottom: 14 }}>
         <Space wrap>
           <DatePicker picker="month" value={month} onChange={(v) => { if (v) { setMonth(v); setActiveDate(''); } }} allowClear={false} />
@@ -192,9 +196,9 @@ function StatsPanel({ isAdmin, teachers }) {
         </div>
       </Card>
 
-      <Card size="small" title={`打卡明细${activeDate ? ' · ' + activeDate : ' · 本月'}`}>
+      <Card size="small" title={`课程明细（含打卡状态）${activeDate ? ' · ' + activeDate : ' · 本月'}`}>
         <Table rowKey="lessonId" dataSource={data.details || []} columns={columns} size="small"
-          pagination={{ pageSize: 12, showSizeChanger: false }} locale={{ emptyText: '暂无打卡记录' }} />
+          pagination={{ pageSize: 12, showSizeChanger: false }} locale={{ emptyText: '所选区间暂无课程' }} />
       </Card>
     </>
   );
