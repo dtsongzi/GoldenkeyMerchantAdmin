@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Layout, Menu, Button, Typography, Badge } from 'antd';
-import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined, IdcardOutlined } from '@ant-design/icons';
+import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined, IdcardOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Courses from './pages/Courses.jsx';
@@ -10,6 +10,7 @@ import Schedule from './pages/Schedule.jsx';
 import Records from './pages/Records.jsx';
 import Enrollments from './pages/Enrollments.jsx';
 import Teachers from './pages/Teachers.jsx';
+import Checkins from './pages/Checkins.jsx';
 import { api, currentUser } from './api.js';
 
 const { Sider, Content } = Layout;
@@ -33,6 +34,7 @@ function Shell({ user, onLogout, children }) {
     { key: '/students', icon: <TeamOutlined />, label: '学生管理' },
     { key: '/schedule', icon: <CalendarOutlined />, label: '排课管理' },
     { key: '/records', icon: <FileTextOutlined />, label: '上课记录' },
+    { key: '/checkins', icon: <CheckCircleOutlined />, label: '课程打卡' },
   ];
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -107,6 +109,7 @@ export default function App() {
       <Route path="/students" element={<Shell user={user} onLogout={logout}><Students user={user} /></Shell>} />
       <Route path="/schedule" element={<Shell user={user} onLogout={logout}><Schedule user={user} /></Shell>} />
       <Route path="/records" element={<Shell user={user} onLogout={logout}><Records user={user} /></Shell>} />
+      <Route path="/checkins" element={<Shell user={user} onLogout={logout}><Checkins user={user} /></Shell>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

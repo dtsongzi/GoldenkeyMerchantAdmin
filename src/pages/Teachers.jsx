@@ -93,8 +93,41 @@ function PhotoPicker({ value, onChange }) {
         </Upload>
       </div>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        最多建议 3 张；自动压缩后以 base64 存入数据库，会展示在学员端教师介绍页。
+        最多建议 3 张，会展示在学员端教师介绍页。
       </Typography.Text>
+    </div>
+  );
+}
+
+/** 教师头像选择器：单张图片压缩为 base64 data URL（压缩到小尺寸，避免头像过大） */
+function AvatarPicker({ value, onChange }) {
+  const { message } = AntApp.useApp();
+  const [busy, setBusy] = useState(false);
+
+  const beforeUpload = (file) => {
+    const isImg = file.type && file.type.indexOf('image/') === 0;
+    if (!isImg) { message.error('只能上传图片'); return Upload.LIST_IGNORE; }
+    if (file.size > 8 * 1024 * 1024) { message.error('图片请小于 8MB'); return Upload.LIST_IGNORE; }
+    setBusy(true);
+    compressToDataUrl(file, 400, 0.82)
+      .then((dataUrl) => onChange(dataUrl))
+      .catch((e) => message.error(e.message || '处理图片失败'))
+      .finally(() => setBusy(false));
+    return Upload.LIST_IGNORE;
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <Avatar src={value || undefined} size={72} style={{ background: '#c9a24b', fontSize: 28 }}>
+        {String('师').slice(0, 1)}
+      </Avatar>
+      <Upload accept="image/*" listType="picture-card" showUploadList={false} beforeUpload={beforeUpload} disabled={busy}>
+        <div style={{ fontSize: 12, color: '#888' }}>{busy ? '处理中…' : '+ 上传头像'}</div>
+      </Upload>
+      {value && (
+        <Button size="small" danger onClick={() => onChange('')}>移除头像</Button>
+      )}
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>选填，上传后展示在教师列表与学员端</Typography.Text>
     </div>
   );
 }
@@ -363,8 +396,8 @@ export default function Teachers() {
             </Col>
           </Row>
 
-          <Form.Item label="头像地址" name="avatar">
-            <Input placeholder="图片 URL（选填）" maxLength={512} />
+          <Form.Item label="教师头像" name="avatar">
+            <AvatarPicker />
           </Form.Item>
 
           <Form.Item label="个人简介" name="bio">

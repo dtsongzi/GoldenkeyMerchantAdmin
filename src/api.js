@@ -82,6 +82,12 @@ export const api = {
   listRecords: (q = {}) => request('/admin/records' + qs(q)),
   teacherRecords: (q = {}) => request('/teacher/records' + qs(q)),
 
+  // 教师课程打卡
+  checkinLessons: (q = {}) => request('/checkins/lessons' + qs(q)),
+  doCheckin: (lessonId, note) => request('/checkins', { method: 'POST', body: JSON.stringify({ lessonId, note }) }),
+  undoCheckin: (lessonId) => request(`/checkins/${lessonId}`, { method: 'DELETE' }),
+  checkinStats: (q = {}) => request('/checkins/stats' + qs(q)),
+
   // 排课
   scheduleGrid: (q = {}) => request('/admin/schedule' + qs(q)),
   updateScheduleBlock: (id, body) => request(`/admin/schedule/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
