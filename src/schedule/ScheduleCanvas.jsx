@@ -548,13 +548,17 @@ export default function ScheduleCanvas({
             if (lesson) startMove(e, lesson);
           }}
           onClick={(e) => {
-            if (!editable || suppressClick.current) return;
+            if (suppressClick.current) return;
             const el = e.target.closest?.('.sc-block');
             if (!el) return;
             const lesson = lessonsById.get(Number(el.dataset.id));
             if (!lesson) return;
-            // 右上角 ×：直接删除，无额外确认弹窗（本次编辑内可用「取消编辑」回滚）
-            if (e.target.closest?.('[data-action="delete"]')) { onDelete?.(lesson); return; }
+            // 右上角 ×：仅编辑态可删除（只读态本来也不渲染删除按钮）
+            if (e.target.closest?.('[data-action="delete"]')) {
+              if (editable) onDelete?.(lesson);
+              return;
+            }
+            // 只读态点击也弹出详情框（由 openEdit 按编辑态决定是「详情」还是「编辑」）
             onEdit(lesson);
           }}
           onDoubleClick={(e) => {

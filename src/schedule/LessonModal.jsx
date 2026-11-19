@@ -50,7 +50,7 @@ function initialForm(lesson, initial, meta) {
 
 export default function LessonModal({
   open, lesson, initial, meta, seriesCount = 0, busy, replaceCount = 0, draftClash, onFormChange,
-  onCancel, onSubmit, onDelete, onDeleteSeries,
+  onCancel, onSubmit, onDelete, onDeleteSeries, readOnly = false,
 }) {
   const [f, setF] = useState(() => initialForm(lesson, initial, meta));
   const [err, setErr] = useState('');
@@ -99,34 +99,46 @@ export default function LessonModal({
   return (
     <Modal
       open={open}
-      title={lesson ? (applySeries ? '修改整个循环系列' : '编辑课程') : '新建课程'}
+      title={readOnly ? '课程详情' : (lesson ? (applySeries ? '修改整个循环系列' : '编辑课程') : '新建课程')}
       width={560}
       onCancel={onCancel}
       mask={{ closable: false }}
       styles={{ mask: { backgroundColor: 'rgba(30, 26, 18, .2)' } }}
       footer={
-        <div className="sc-modal-footer">
-          <div>
-            {lesson && (
-              <Space>
-                <Button danger size="small" onClick={() => onDelete(lesson)}>删除本节</Button>
-                {isSeries && (
-                  <Popconfirm title={`删除整个系列的 ${seriesCount} 节课？`} okText="删除系列" cancelText="取消"
-                    onConfirm={() => onDeleteSeries(lesson.series_id)}>
-                    <Button danger size="small">删除整个系列</Button>
-                  </Popconfirm>
-                )}
-              </Space>
-            )}
+        readOnly ? (
+          <div className="sc-modal-footer">
+            <span />
+            <Space><Button type="primary" onClick={onCancel}>关闭</Button></Space>
           </div>
-          <Space>
-            <Button onClick={onCancel}>取消</Button>
-            <Button type="primary" loading={busy} onClick={submit}>{lesson ? '保存修改' : '创建课程'}</Button>
-          </Space>
-        </div>
+        ) : (
+          <div className="sc-modal-footer">
+            <div>
+              {lesson && (
+                <Space>
+                  <Button danger size="small" onClick={() => onDelete(lesson)}>删除本节</Button>
+                  {isSeries && (
+                    <Popconfirm title={`删除整个系列的 ${seriesCount} 节课？`} okText="删除系列" cancelText="取消"
+                      onConfirm={() => onDeleteSeries(lesson.series_id)}>
+                      <Button danger size="small">删除整个系列</Button>
+                    </Popconfirm>
+                  )}
+                </Space>
+              )}
+            </div>
+            <Space>
+              <Button onClick={onCancel}>取消</Button>
+              <Button type="primary" loading={busy} onClick={submit}>{lesson ? '保存修改' : '创建课程'}</Button>
+            </Space>
+          </div>
+        )
       }
     >
-      {!lesson && (replaceCount > 0 || draftClash?.roomText) && (
+      {readOnly && (
+        <Typography.Paragraph type="secondary" className="sc-form-tip" style={{ marginTop: 0 }}>
+          当前为只读查看模式，点击课表工具栏「编辑课表」后可修改课程。
+        </Typography.Paragraph>
+      )}
+      {!readOnly && !lesson && (replaceCount > 0 || draftClash?.roomText) && (
         <div className="sc-draft-alerts">
           {replaceCount > 0 && (
             <div className="sc-replace-tip">
@@ -158,7 +170,7 @@ export default function LessonModal({
         </div>
       )}
 
-      {isSeries && (
+      {isSeries && !readOnly && (
         <div className="sc-scope">
           <span className="sc-scope-label">应用范围</span>
           <Radio.Group value={f.scope} onChange={(e) => set({ scope: e.target.value })}>
@@ -167,18 +179,23 @@ export default function LessonModal({
           </Radio.Group>
         </div>
       )}
+      {isSeries && readOnly && (
+        <div className="sc-scope">
+          <span className="sc-scope-label">循环系列</span>共 {seriesCount} 节课
+        </div>
+      )}
 
       <div className="sc-form-grid">
         <div className="sc-form-item sc-span2">
           <label>课程名称 <em>*</em></label>
           <Space.Compact style={{ width: '100%' }}>
-            <Select style={{ width: '46%' }} placeholder="选择课程模板" allowClear
+            <Select style={{ width: '46%' }} placeholder="选择课程模板" allowClear disabled={readOnly}
               options={courseOptions} value={f.course_id}
               onChange={(v) => {
                 const c = (meta.courses || []).find((x) => x.id === v);
                 set({ course_id: v, title: v ? (c?.title || f.title) : f.title });
               }} />
-            <Input style={{ width: '54%' }} placeholder="课程名称（可自定义）" value={f.title}
+            <Input style={{ width: '54%' }} placeholder="课程名称（可自定义）" value={f.title} disabled={readOnly}
               onChange={(e) => set({ title: e.target.value })} />
           </Space.Compact>
         </div>
@@ -186,20 +203,20 @@ export default function LessonModal({
         <div className="sc-form-item">
           <label>上课教师 <em>*</em></label>
           <Select style={{ width: '100%' }} placeholder="选择教师" options={teacherOptions}
-            value={f.teacher_id} disabled={!meta.isAdmin}
+            value={f.teacher_id} disabled={readOnly || !meta.isAdmin}
             onChange={(v) => set({ teacher_id: v })} />
         </div>
         <div className="sc-form-item">
           <label>教室</label>
           <Select style={{ width: '100%' }} placeholder="选择教室" allowClear options={roomOptions}
-            value={f.classroom_id} onChange={(v) => set({ classroom_id: v })} />
+            value={f.classroom_id} disabled={readOnly} onChange={(v) => set({ classroom_id: v })} />
         </div>
 
         <div className="sc-form-item sc-span2">
           <label>上课学生（可多选、可搜索）</label>
           <Select style={{ width: '100%' }} mode="multiple" allowClear showSearch
             optionFilterProp="label" maxTagCount="responsive" placeholder="搜索并选择学生"
-            options={memberOptions} value={f.studentIds}
+            options={memberOptions} value={f.studentIds} disabled={readOnly}
             onChange={(v) => set({ studentIds: v })} />
           {lesson?.origin_kind === 'booking' && (
             <span className="sc-hint">
@@ -215,21 +232,21 @@ export default function LessonModal({
         <div className="sc-form-item">
           <label>上课日期</label>
           <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" value={f.slot_date ? dayjs(f.slot_date) : null}
-            disabled={applySeries} onChange={(d) => set({ slot_date: d ? d.format('YYYY-MM-DD') : '' })} />
+            disabled={readOnly || applySeries} onChange={(d) => set({ slot_date: d ? d.format('YYYY-MM-DD') : '' })} />
           {applySeries && <span className="sc-hint">统一修改时不改变各节课日期</span>}
         </div>
         <div className="sc-form-item">
           <label>时段</label>
           <Space.Compact style={{ width: '100%' }}>
             <TimePicker style={{ width: '50%' }} format="HH:mm" needConfirm={false} minuteStep={30}
-              value={toDayjs(f.start)}
+              value={toDayjs(f.start)} disabled={readOnly}
               disabledTime={() => ({ disabledHours: () => [
                 ...Array.from({ length: settings.startHour }, (_, i) => i),
                 ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
               ] })}
               onChange={(d) => d && set({ start: snapHour(parseTime(d.format('HH:mm')), settings) })} />
             <TimePicker style={{ width: '50%' }} format="HH:mm" needConfirm={false} minuteStep={30}
-              value={toDayjs(f.end)}
+              value={toDayjs(f.end)} disabled={readOnly}
               disabledTime={() => ({ disabledHours: () => [
                 ...Array.from({ length: settings.startHour }, (_, i) => i),
                 ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
@@ -240,13 +257,14 @@ export default function LessonModal({
 
         <div className="sc-form-item">
           <label>课程状态</label>
-          <Radio.Group value={f.lesson_status} onChange={(e) => set({ lesson_status: e.target.value })}>
+          <Radio.Group value={f.lesson_status} disabled={readOnly} onChange={(e) => set({ lesson_status: e.target.value })}>
             {LESSON_STATUS.map((s) => <Radio.Button key={s.value} value={s.value}>{s.label}</Radio.Button>)}
           </Radio.Group>
         </div>
         <div className="sc-form-item">
           <label>备注</label>
-          <Input placeholder="如：带教材、需调琴" value={f.remark} onChange={(e) => set({ remark: e.target.value })} />
+          <Input placeholder="如：带教材、需调琴" value={f.remark} disabled={readOnly}
+            onChange={(e) => set({ remark: e.target.value })} />
         </div>
       </div>
 
@@ -257,10 +275,12 @@ export default function LessonModal({
         </div>
       )}
       {err && <div className="sc-form-error">{err}</div>}
-      <Typography.Paragraph type="secondary" className="sc-form-tip">
-        规则：同一位教师的时段重叠可以直接覆盖（旧课会被替换）；<b>教室</b>同一时段只能排一节课，
-        教室被其他教师占用时需换教室或改时间，无法覆盖。学生允许同时段多课，仅作提示。
-      </Typography.Paragraph>
+      {!readOnly && (
+        <Typography.Paragraph type="secondary" className="sc-form-tip">
+          规则：同一位教师的时段重叠可以直接覆盖（旧课会被替换）；<b>教室</b>同一时段只能排一节课，
+          教室被其他教师占用时需换教室或改时间，无法覆盖。学生允许同时段多课，仅作提示。
+        </Typography.Paragraph>
+      )}
     </Modal>
   );
 }

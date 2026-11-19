@@ -273,9 +273,9 @@ export default function Schedule({ user }) {
     setEditorKey((k) => k + 1);
   };
   const openEdit = (lesson) => {
-    if (!editing) return;
+    // 只读态点击课程弹出「详情」，编辑态才弹出「编辑」表单
     setPendingNew(null);
-    setEditor({ lesson, initial: null });
+    setEditor({ lesson, initial: null, readOnly: !editing });
     setEditorKey((k) => k + 1);
     setCtx(null);
   };
@@ -720,7 +720,7 @@ export default function Schedule({ user }) {
 
       {/* 新建 / 编辑弹窗 */}
       {editor && (
-        <LessonModal key={editorKey} open meta={editorMeta} lesson={editor.lesson}
+        <LessonModal key={editorKey} open meta={editorMeta} lesson={editor.lesson} readOnly={!!editor.readOnly}
           initial={editor.initial} seriesCount={seriesCount} busy={busy}
           replaceCount={editor.lesson ? 0 : (pendingNew?.removeIds?.length || 0)}
           draftClash={editor.lesson ? null : draftClash}

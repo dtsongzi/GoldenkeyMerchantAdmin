@@ -153,6 +153,8 @@
 .sc-block > div { flex: 0 0 auto; }
 .sc-block.editable { cursor: grab; }
 .sc-block.editable:active { cursor: grabbing; }
+/* 只读态课块仍可点击查看课程详情 */
+.sc-scroll.readonly .sc-block { cursor: pointer; }
 .sc-block:hover { z-index: 12; box-shadow: 0 4px 14px rgba(60, 52, 38, .16); filter: saturate(1.12); }
 .sc-block.conflict { box-shadow: inset 0 0 0 2px #c4786f, 0 1px 3px rgba(60, 52, 38, .08); }
 .sc-block.sc-dragging { pointer-events: none; opacity: .82; z-index: 40; box-shadow: 0 10px 24px rgba(60, 52, 38, .24); }
