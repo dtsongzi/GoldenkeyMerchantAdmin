@@ -137,8 +137,10 @@ function StatsPanel({ isAdmin, teachers }) {
     { title: '课程', dataIndex: 'title', key: 'title' },
     { title: '教师', dataIndex: 'teacher_name', key: 'teacher_name' },
     {
-      title: '打卡状态', dataIndex: 'checked', key: 'checked', width: 100,
-      render: (v) => (v ? <Tag color="blue">已打卡</Tag> : <Tag>未打卡</Tag>),
+      title: '打卡状态', dataIndex: 'checked', key: 'checked', width: 110,
+      render: (v) => (v
+        ? <Tag color="green" style={{ fontWeight: 600 }}>✓ 已打卡</Tag>
+        : <Tag color="red" style={{ fontWeight: 600 }}>✗ 未打卡</Tag>),
     },
     { title: '打卡时间', dataIndex: 'checked_at', key: 'checked_at', render: (v) => v || '-' },
     { title: '备注', dataIndex: 'note', key: 'note', render: (v) => v || '-' },
