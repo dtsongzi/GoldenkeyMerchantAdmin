@@ -71,6 +71,26 @@ export default function Schedule({ user }) {
     if (!activeSem || !s) return s;
     return s < activeSem.start_date ? activeSem.start_date : (s > activeSem.end_date ? activeSem.end_date : s);
   };
+  // 课表窗口起点：周视图定位到所在周周一，再把整周夹在学期范围内。
+  // 学期开头/结尾那几天若不足一整周，就从学期边界起往后/往前铺满一周，
+  // 避免跨界的日期列被过滤后「只剩一两天」。
+  const weekStartFor = (dateStr, mode) => {
+    const d = parseLocal(dateStr);
+    if (mode === 'day') return fmt(d);
+    const count = 7;
+    const monday = mondayOf(d);
+    if (!activeSem) return fmt(monday);
+    const weekEnd = addDays(monday, count - 1);
+    if (fmt(monday) < activeSem.start_date) {
+      // 所在周横跨学期开始日：从学期第一天起铺满一周
+      return fmt(parseLocal(activeSem.start_date));
+    }
+    if (fmt(weekEnd) > activeSem.end_date) {
+      // 所在周横跨学期结束日：往前倒推，让最后一天正好是学期结束日
+      return fmt(addDays(parseLocal(activeSem.end_date), -(count - 1)));
+    }
+    return fmt(monday);
+  };
   const [editor, setEditor] = useState(null);
   const [editorKey, setEditorKey] = useState(0);
   // 拖拽新建的草稿：弹窗期间在画布上画轮廓，并置灰「保存后会被替换」的冲突课
@@ -99,10 +119,15 @@ export default function Schedule({ user }) {
       return s >= activeSem.start_date && s <= activeSem.end_date;
     });
     if (inSem.length) return inSem;
-    const s = clampToSem(selectedDate);
-    return [parseLocal(s)];
+    // 防御：windowStart 仍落在学期外时，用同一套定位规则重新铺一周，避免退化成单日
+    const anchor = parseLocal(weekStartFor(clampToSem(selectedDate), viewMode));
+    return Array.from({ length: daysCount }, (_, i) => addDays(anchor, i))
+      .filter((d) => {
+        const s = fmt(d);
+        return s >= activeSem.start_date && s <= activeSem.end_date;
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawDays, activeSem, selectedDate]);
+  }, [rawDays, activeSem, selectedDate, viewMode, daysCount]);
   const rangeFrom = fmt(days[0]);
   const rangeTo = fmt(days[days.length - 1]);
 
@@ -165,7 +190,7 @@ export default function Schedule({ user }) {
       message.info('已切换学期，编辑模式已退出');
     }
     setSelectedDate((prev) => clampToSem(prev));
-    setWindowStart((prev) => clampToSem(prev));
+    setWindowStart((prev) => weekStartFor(clampToSem(prev), viewMode));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSem?.id, activeSem?.start_date, activeSem?.end_date]);
 
@@ -539,19 +564,18 @@ export default function Schedule({ user }) {
     const d = addDays(parseLocal(from), n);
     const date = clampToSem(fmt(d));
     setSelectedDate(date);
-    setWindowStart(fmt(viewMode === 'week' || viewMode === 'teacher' || viewMode === 'room' ? mondayOf(parseLocal(date)) : parseLocal(date)));
+    setWindowStart(weekStartFor(date, viewMode));
   };
   const changeView = (v) => {
     setViewMode(v);
-    // 始终以当前选中日期为锚点：日视图定位到当天，其余视图定位到所在周的周一
-    const anchor = parseLocal(clampToSem(selectedDate));
-    setWindowStart(fmt(v === 'day' ? anchor : mondayOf(anchor)));
+    // 始终以当前选中日期为锚点定位，学期边界处保证仍是完整一周
+    setWindowStart(weekStartFor(clampToSem(selectedDate), v));
   };
   const jumpTo = (d) => {
     if (!d) return;
     const date = clampToSem(d.format('YYYY-MM-DD'));
     setSelectedDate(date);
-    setWindowStart(fmt(viewMode === 'day' ? parseLocal(date) : mondayOf(parseLocal(date))));
+    setWindowStart(weekStartFor(date, viewMode));
   };
   const exportExcel = async () => {
     try {
