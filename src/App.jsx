@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Layout, Menu, Button, Typography, Badge } from 'antd';
-import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined, IdcardOutlined, CheckCircleOutlined, ScheduleOutlined } from '@ant-design/icons';
+import { LogoutOutlined, DashboardOutlined, BookOutlined, TeamOutlined, CalendarOutlined, FileTextOutlined, AuditOutlined, IdcardOutlined, CheckCircleOutlined, ScheduleOutlined, HomeOutlined } from '@ant-design/icons';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Courses from './pages/Courses.jsx';
@@ -12,6 +12,7 @@ import Enrollments from './pages/Enrollments.jsx';
 import Teachers from './pages/Teachers.jsx';
 import Checkins from './pages/Checkins.jsx';
 import Semesters from './pages/Semesters.jsx';
+import Classrooms from './pages/Classrooms.jsx';
 import { api, currentUser } from './api.js';
 
 const { Sider, Content } = Layout;
@@ -32,6 +33,7 @@ function Shell({ user, onLogout, children }) {
     { key: '/enrollments', icon: <AuditOutlined />, label: <span>报名审核 {pending > 0 && <Badge count={pending} size="small" offset={[4, -2]} />}</span> },
     { key: '/teachers', icon: <IdcardOutlined />, label: '教师管理', adminOnly: true },
     { key: '/semesters', icon: <ScheduleOutlined />, label: '学期管理', adminOnly: true },
+    { key: '/classrooms', icon: <HomeOutlined />, label: '教室管理', adminOnly: true },
     { key: '/courses', icon: <BookOutlined />, label: '课程管理' },
     { key: '/students', icon: <TeamOutlined />, label: '学生管理' },
     { key: '/schedule', icon: <CalendarOutlined />, label: '排课管理' },
@@ -111,6 +113,12 @@ export default function App() {
         path="/semesters"
         element={user?.role === 'admin'
           ? <Shell user={user} onLogout={logout}><Semesters /></Shell>
+          : <Navigate to="/dashboard" replace />}
+      />
+      <Route
+        path="/classrooms"
+        element={user?.role === 'admin'
+          ? <Shell user={user} onLogout={logout}><Classrooms /></Shell>
           : <Navigate to="/dashboard" replace />}
       />
       <Route path="/courses" element={<Shell user={user} onLogout={logout}><Courses user={user} /></Shell>} />

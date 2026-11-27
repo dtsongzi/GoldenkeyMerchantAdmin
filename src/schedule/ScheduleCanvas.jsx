@@ -63,6 +63,7 @@ export default function ScheduleCanvas({
   days, lessons, allLessons, settings, viewMode, editable, selectedDate,
   teachers, classrooms, conflicts, studentHints, onBlank, onEdit, onMove, onResize,
   onContext, onSelectDate, scrollRef, onDelete,
+  onPreview, onPreviewResize, onPreviewCancel,
   pendingNew, pendingRemoveIds, draftDefaults,
 }) {
   const hourStart = settings.startHour ?? 7;
@@ -191,7 +192,7 @@ export default function ScheduleCanvas({
   };
   const startBlank = (e, date, lane) => {
     if (!editable || e.button !== 0 || dragRef.current || selRef.current) return;
-    if (e.target.closest?.('.sc-block')) return;
+    if (e.target.closest?.('.sc-block') || e.target.closest?.('.sc-draft-preview')) return;
     e.stopPropagation();
     const laneEl = e.currentTarget;
     const rect = laneEl.getBoundingClientRect();
@@ -273,14 +274,55 @@ export default function ScheduleCanvas({
       };
       if (!s.moved) {
         const st = s.anchor;
-        onBlank({ date: s.date, start: st, end: Math.min(hourEnd, st + 1), ...v });
+        onPreview?.({ date: s.date, start: st, end: Math.min(hourEnd, st + 1), ...v });
       } else {
         const a = Math.min(s.anchor, s.cur), b = Math.max(s.anchor, s.cur, a + 0.5);
-        onBlank({ date: s.date, start: a, end: Math.min(hourEnd, b), ...v });
+        onPreview?.({ date: s.date, start: a, end: Math.min(hourEnd, b), ...v });
       }
     };
     const onUp = () => finish(true);
     const onCancel = () => finish(false);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+  };
+
+  // ---------- 新建草稿区域：拖上下边缘调整时长，再点一次才弹创建弹窗 ----------
+  const startDraftResize = (e, edge) => {
+    if (!editable || !pendingNew || pendingNew.stage !== 'preview') return;
+    e.stopPropagation();
+    e.preventDefault();
+    const laneEl = e.currentTarget.closest('.sc-lane');
+    if (!laneEl) return;
+    const orig = { start: pendingNew.start, end: pendingNew.end };
+    const startY = e.clientY;
+    let raf = 0, lastY = startY;
+    const move = (ev) => {
+      lastY = ev.clientY;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const raw = (lastY - startY) / HOUR_PX;
+        const d = settings.snap === false ? Math.round(raw * 4) / 4 : Math.round(raw * 2) / 2;
+        let st = orig.start, en = orig.end;
+        if (edge === 'top') st = clamp(orig.start + d, hourStart, orig.end - 0.5);
+        else en = clamp(orig.end + d, orig.start + 0.5, hourEnd);
+        onPreviewResize?.({ start: st, end: en });
+      });
+    };
+    const finish = (commit) => {
+      if (raf) cancelAnimationFrame(raf);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      document.body.style.userSelect = '';
+      // 拖动结束的 click 不应立刻弹出创建弹窗
+      suppressClick.current = true;
+      setTimeout(() => { suppressClick.current = false; }, 0);
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
@@ -595,6 +637,8 @@ export default function ScheduleCanvas({
                     const blocks = perLane.get(lane.key) || [];
                     const layout = layoutLane(blocks);
                     const draftHere = !!pendingNew && key === pendingNew.date && lane.key === draftLaneIn(dayLanes);
+                    const previewHere = draftHere && pendingNew.stage === 'preview';
+                    const modalHere = draftHere && pendingNew.stage === 'modal';
                     return (
                       <div key={lane.key} className="sc-lane" style={{
                         width: lw,
@@ -629,7 +673,35 @@ export default function ScheduleCanvas({
                               pendingRemove={pendingRemoveIds?.has(b.id)} />
                           );
                         })}
-                        {draftHere && (
+                        {previewHere && (
+                          <div className="sc-draft-preview"
+                            style={{
+                              top: (pendingNew.start - hourStart) * HOUR_PX,
+                              height: Math.max(24, (pendingNew.end - pendingNew.start) * HOUR_PX),
+                            }}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (suppressClick.current) return;
+                              onBlank?.({
+                                date: pendingNew.date, start: pendingNew.start, end: pendingNew.end,
+                                teacherId: pendingNew.teacher_id, classroomId: pendingNew.classroom_id,
+                              });
+                            }}
+                            title="点击创建课程；拖动上下边缘调整时间">
+                            <div className="sc-draft-handle top" data-edge="top"
+                              onPointerDown={(e) => startDraftResize(e, 'top')} title="拖动调整开始时间" />
+                            <div className="sc-draft-plus">+</div>
+                            <span className="sc-draft-range">{hhmm(pendingNew.start)} – {hhmm(pendingNew.end)}</span>
+                            {pendingNew.removeIds?.length > 0 &&
+                              <em className="sc-draft-replace">替换 {pendingNew.removeIds.length} 节</em>}
+                            <button type="button" className="sc-draft-close" title="取消"
+                              onClick={(e) => { e.stopPropagation(); onPreviewCancel?.(); }}>×</button>
+                            <div className="sc-draft-handle bottom" data-edge="bottom"
+                              onPointerDown={(e) => startDraftResize(e, 'bottom')} title="拖动调整结束时间" />
+                          </div>
+                        )}
+                        {modalHere && (
                           <div className="sc-draft-outline"
                             style={{
                               top: (pendingNew.start - hourStart) * HOUR_PX,

@@ -16,6 +16,29 @@
 .sc-head-bar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
 .sc-subtitle { color: var(--sc-muted); font-size: 12px; margin-top: 4px; line-height: 1.6; }
 
+/* 顶部学期选择条：卡片尽量长、名称与日期范围完整显示 */
+.sc-semester-bar {
+  display: flex; align-items: stretch; gap: 8px; margin-bottom: 12px;
+  padding: 8px 10px; background: var(--sc-card); border: 1px solid var(--sc-border);
+  border-radius: 12px; overflow-x: auto; box-shadow: 0 2px 10px rgba(70, 62, 45, .035);
+}
+.sc-semester-label {
+  flex: 0 0 auto; align-self: center; font-size: 12px; font-weight: 600;
+  color: var(--sc-muted); letter-spacing: .05em; padding: 0 4px;
+}
+.sc-sem-chip {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  min-width: 260px; padding: 8px 14px; border: 1px solid var(--sc-border);
+  border-radius: 8px; background: #faf9f5; cursor: pointer;
+  font-size: 12px; color: var(--sc-muted); white-space: nowrap;
+  transition: border-color .12s, background .12s;
+}
+.sc-sem-chip b { font-size: 13px; color: var(--sc-text); }
+.sc-sem-chip:hover { border-color: var(--sc-accent); background: #f3f6f2; }
+.sc-sem-chip.active { border-color: var(--sc-accent-dark); background: #edf3ee; box-shadow: inset 0 0 0 1px rgba(99,121,111,.18); }
+.sc-sem-chip.active b { color: var(--sc-accent-dark); }
+.sc-sem-empty { align-self: center; font-size: 12px; color: var(--sc-warn); padding: 6px 4px; }
+
 /* ---------- 区域 A：批量循环排课 ---------- */
 .sc-quick {
   background: var(--sc-card); border: 1px solid var(--sc-border); border-radius: 12px;
@@ -38,6 +61,7 @@
 .sc-week-count { font-size: 12px; color: var(--sc-muted); white-space: nowrap; }
 .sc-quick-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; border-top: 1px dashed var(--sc-border); padding-top: 12px; }
 .sc-quick-note { font-size: 12px; color: var(--sc-muted); }
+.sc-template .sc-quick-fields { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 
 /* ---------- 冲突提示条 ---------- */
 .sc-alert {
@@ -226,6 +250,42 @@
 .sc-draft-outline span { white-space: nowrap; }
 .sc-draft-outline em { font-style: normal; font-size: 9.5px; color: #9a6a4f; white-space: nowrap; }
 
+/* 两段式新建：空白拉出的可拉伸区域，中央「+」点击后才弹创建弹窗 */
+.sc-draft-preview {
+  position: absolute; left: 2px; right: 2px; z-index: 16;
+  border: 2px dashed var(--sc-accent-dark); border-radius: 8px;
+  background: rgba(180, 208, 186, .3); color: var(--sc-accent-dark);
+  cursor: pointer; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; font-size: 10px; line-height: 1.25;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.6) inset;
+}
+.sc-draft-preview:hover { background: rgba(180, 208, 186, .42); }
+.sc-draft-plus {
+  width: 30px; height: 30px; border-radius: 50%; line-height: 27px; text-align: center;
+  font-size: 22px; font-weight: 500; color: #fff; background: var(--sc-accent-dark);
+  box-shadow: 0 2px 6px rgba(70,62,45,.2);
+}
+.sc-draft-range { white-space: nowrap; }
+.sc-draft-replace { font-style: normal; font-size: 9.5px; color: #9a6a4f; white-space: nowrap; }
+.sc-draft-handle {
+  position: absolute; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 2;
+}
+.sc-draft-handle::after {
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+  width: 28px; height: 3px; border-radius: 2px; background: var(--sc-accent-dark); opacity: .55;
+}
+.sc-draft-handle.top { top: 0; }
+.sc-draft-handle.top::after { top: 2px; }
+.sc-draft-handle.bottom { bottom: 0; }
+.sc-draft-handle.bottom::after { bottom: 2px; }
+.sc-draft-close {
+  position: absolute; top: 1px; right: 3px; z-index: 3;
+  border: 0; background: rgba(255,255,255,.7); color: #8b7c68;
+  border-radius: 4px; font-size: 13px; line-height: 15px; width: 16px; height: 16px; padding: 0;
+}
+.sc-draft-close:hover { background: var(--sc-warn); color: #fff; }
+
 /* 新建弹窗内的替换提示 */
 .sc-draft-alerts { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
 .sc-replace-tip {
@@ -310,5 +370,5 @@
   .sc-scroll { max-height: none; overflow: visible; border: 1px solid #ccc; box-shadow: none; }
   .sc-inner { zoom: .8; }
   .sc-block { box-shadow: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .sc-handle, .sc-block-del, .sc-pending-tag, .sc-draft-outline, .sc-sel, .sc-drop-preview { display: none !important; }
+  .sc-handle, .sc-block-del, .sc-pending-tag, .sc-draft-outline, .sc-draft-preview, .sc-sel, .sc-drop-preview { display: none !important; }
 }

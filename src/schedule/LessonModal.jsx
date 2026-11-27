@@ -43,7 +43,7 @@ function initialForm(lesson, initial, meta) {
     slot_date: initial?.date,
     start: s,
     end: Math.min(meta.settings?.endHour ?? 21, s + (initial?.end && initial.end > s ? initial.end - s : 1)),
-    remark: '',
+    remark: meta.defaultRemark || '',
     lesson_status: 'normal',
     scope: 'single',
     semester_id: meta.defaultSemesterId ?? initial?.semesterId ?? undefined,
