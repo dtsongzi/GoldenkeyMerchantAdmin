@@ -30,6 +30,7 @@ function initialForm(lesson, initial, meta) {
       remark: lesson.remark || '',
       lesson_status: lesson.lesson_status || 'normal',
       scope: 'single',
+      semester_id: lesson.semester_id ?? undefined,
     };
   }
   const s = initial?.start ?? 9;
@@ -45,6 +46,7 @@ function initialForm(lesson, initial, meta) {
     remark: '',
     lesson_status: 'normal',
     scope: 'single',
+    semester_id: meta.defaultSemesterId ?? initial?.semesterId ?? undefined,
   };
 }
 
@@ -93,6 +95,7 @@ export default function LessonModal({
       remark: f.remark || '',
       lesson_status: f.lesson_status,
       scope: f.scope,
+      semester_id: f.semester_id ?? null,
     });
   };
 
@@ -229,6 +232,11 @@ export default function LessonModal({
           )}
         </div>
 
+        <div className="sc-form-item">
+          <label>所属学期</label>
+          <Select style={{ width: '100%' }} placeholder="选择学期" options={(meta.semesters || []).map((s) => ({ value: s.id, label: s.name }))}
+            value={f.semester_id} disabled={readOnly} onChange={(v) => set({ semester_id: v })} />
+        </div>
         <div className="sc-form-item">
           <label>上课日期</label>
           <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" value={f.slot_date ? dayjs(f.slot_date) : null}

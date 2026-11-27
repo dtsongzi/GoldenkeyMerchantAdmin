@@ -51,6 +51,9 @@ export default function Schedule({ user }) {
   const [busy, setBusy] = useState(false);
 
   const [filter, setFilter] = useState({ teacherId: undefined, classroomId: undefined, studentId: undefined });
+  // 学期：排课必须落在单个学期范围内，不得跨学期
+  const [semesters, setSemesters] = useState([]);
+  const [activeSemesterId, setActiveSemesterId] = useState(undefined);
   const [quick, setQuick] = useState({
     teacherId: undefined,
     courseId: undefined,
@@ -108,6 +111,15 @@ export default function Schedule({ user }) {
 
   useEffect(() => { api.teachers().then(setTeachers).catch(() => {}); }, []);
   useEffect(() => { api.classrooms().then(setClassrooms).catch(() => {}); }, []);
+  // 学期：仅启用学期；默认选中当前学期
+  useEffect(() => {
+    api.semesters().then((rows) => {
+      const enabled = (rows || []).filter((s) => s.status === 1);
+      setSemesters(enabled);
+      const cur = enabled.find((s) => s.is_current === 1);
+      if (cur) setActiveSemesterId((prev) => prev || cur.id);
+    }).catch(() => setSemesters([]));
+  }, []);
   useEffect(() => {
     const p = isAdmin ? api.listCourses() : api.teacherCourses();
     p.then((rows) => setCourses((rows || []).filter((c) => c.status === 1))).catch(() => setCourses([]));
@@ -131,6 +143,17 @@ export default function Schedule({ user }) {
     if (!teachers.length) return;
     setQuick((q) => (q.teacherId ? q : { ...q, teacherId: isAdmin ? teachers[0].id : myTeacherId }));
   }, [teachers, isAdmin, myTeacherId]);
+  // 选中学期后：批量排课的起止日期收敛到该学期范围内（不跨学期）
+  useEffect(() => {
+    const s = semesters.find((x) => String(x.id) === String(activeSemesterId));
+    setQuick((q) => {
+      if (!s) return { ...q, semesterId: undefined };
+      const startDate = q.startDate < s.start_date ? s.start_date : (q.startDate > s.end_date ? s.start_date : q.startDate);
+      let endDate = q.endDate > s.end_date ? s.end_date : q.endDate;
+      if (endDate < startDate) endDate = startDate;
+      return { ...q, semesterId: s.id, startDate, endDate };
+    });
+  }, [activeSemesterId, semesters]);
 
   useEffect(() => {
     const close = () => setCtx(null);
@@ -139,6 +162,10 @@ export default function Schedule({ user }) {
     return () => { window.removeEventListener('click', close); window.removeEventListener('resize', close); };
   }, []);
 
+  const activeSem = useMemo(
+    () => semesters.find((s) => String(s.id) === String(activeSemesterId)),
+    [semesters, activeSemesterId]
+  );
   const conflicts = useMemo(() => buildConflictMap(lessons), [lessons]);
   const studentHints = useMemo(() => buildStudentHints(lessons), [lessons]);
   const displayLessons = useMemo(() => lessons.filter((l) => {
@@ -320,7 +347,9 @@ export default function Schedule({ user }) {
       : (quick.roomIds[0] || classrooms[0]?.id),
     defaultCourseId: quick.courseId,
     defaultCourseTitle: courses.find((c) => c.id === quick.courseId)?.title || '',
-  }), [teachers, classrooms, courses, members, isAdmin, myTeacherId, settings, editor, viewMode, quick]);
+    semesters,
+    defaultSemesterId: activeSemesterId,
+  }), [teachers, classrooms, courses, members, isAdmin, myTeacherId, settings, editor, viewMode, quick, semesters, activeSemesterId]);
 
   const seriesCount = editor?.lesson?.series_id
     ? lessons.filter((l) => l.series_id === editor.lesson.series_id).length : 0;
@@ -414,6 +443,7 @@ export default function Schedule({ user }) {
       courseId: quick.courseId,
       title: courses.find((c) => c.id === quick.courseId)?.title || '',
       classroomIds: quick.roomIds,
+      semesterId: activeSemesterId,
       startDate: quick.startDate,
       endDate: quick.endDate,
       weekdays: quick.weekdays,
@@ -438,7 +468,13 @@ export default function Schedule({ user }) {
     if (!p.courseId) return message.warning('请选择课程');
     if (!p.classroomIds.length) return message.warning('请至少选择一间教室');
     if (!p.weekdays.length) return message.warning('请至少选择一个重复星期');
+    // 已创建学期时必须选学期且日期不越界；未创建学期时沿用旧行为（服务端同样放行）
+    if (semesters.length && !p.semesterId) return message.warning('请选择学期（排课须落在单个学期范围内）');
     if (!p.startDate || !p.endDate) return message.warning('请选择起止日期');
+    const sem = semesters.find((s) => String(s.id) === String(p.semesterId));
+    if (sem && (p.startDate < sem.start_date || p.endDate > sem.end_date)) {
+      return message.warning(`起止日期须在学期范围内（${sem.start_date} ~ ${sem.end_date}）`);
+    }
     if (p.startDate > p.endDate) return message.warning('结束日期不能早于开始日期');
     if (parseTime(p.endHour) <= parseTime(p.startHour)) return message.warning('时段结束时间需晚于起始时间');
     if (parseTime(p.startHour) < settings.startHour || parseTime(p.endHour) > settings.endHour) {
@@ -547,6 +583,11 @@ export default function Schedule({ user }) {
       <div className="sc-quick sc-noprint">
         <div className="sc-quick-title"><b>批量循环排课</b><span>按日期范围 + 重复星期 + 固定时段生成系列课，多教室按顺序循环分配</span></div>
         <div className="sc-quick-fields">
+          <div className="sc-qf"><label>学期</label>
+            <Select placeholder="选择学期" value={activeSemesterId} onChange={(v) => setActiveSemesterId(v)}
+              options={semesters.map((s) => ({ value: s.id, label: `${s.name}${s.is_current === 1 ? '（当前）' : ''}` }))}
+              notFoundContent="请先在「学期管理」创建学期" />
+          </div>
           {isAdmin && (
             <div className="sc-qf"><label>上课教师</label>
               <Select placeholder="选择教师" options={teacherOptions} value={quick.teacherId}
@@ -568,10 +609,12 @@ export default function Schedule({ user }) {
           </div>
           <div className="sc-qf"><label>开始日期</label>
             <DatePicker style={{ width: '100%' }} value={quick.startDate ? dayjs(quick.startDate) : null}
+              disabledDate={(d) => activeSem ? (d && d.format('YYYY-MM-DD') < activeSem.start_date) || (d && d.format('YYYY-MM-DD') > activeSem.end_date) || (quick.endDate && d && d.format('YYYY-MM-DD') > quick.endDate) : false}
               onChange={(d) => setQuick({ ...quick, startDate: d ? d.format('YYYY-MM-DD') : '' })} />
           </div>
           <div className="sc-qf"><label>结束日期</label>
             <DatePicker style={{ width: '100%' }} value={quick.endDate ? dayjs(quick.endDate) : null}
+              disabledDate={(d) => activeSem ? (d && d.format('YYYY-MM-DD') < activeSem.start_date) || (d && d.format('YYYY-MM-DD') > activeSem.end_date) || (quick.startDate && d && d.format('YYYY-MM-DD') < quick.startDate) : false}
               onChange={(d) => setQuick({ ...quick, endDate: d ? d.format('YYYY-MM-DD') : '' })} />
           </div>
           <div className="sc-qf wide"><label>每周重复星期（多选）</label>
@@ -690,6 +733,7 @@ export default function Schedule({ user }) {
           </div>
         </div>
         <span className="sc-toolbar-info">
+          {activeSem ? `${activeSem.name}（${activeSem.start_date} ~ ${activeSem.end_date}） · ` : ''}
           {rangeFrom} ~ {rangeTo} · {displayLessons.length} 节课{loading ? ' · 加载中…' : ''}
         </span>
       </div>

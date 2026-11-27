@@ -3,10 +3,10 @@ import { Table, Tag, Button, Modal, Form, Input, InputNumber, Select, Space, Typ
 import { api, currentUser } from '../api.js';
 import { CalendarHeat } from '../components/Heat.jsx';
 
-const emptyAdmin = { title: '', category: '钢琴课', description: '', duration_min: 60, teacher_id: undefined, status: 1, sort: 0 };
-const emptyApply = { title: '', category: '钢琴课', description: '', duration_min: 60 };
+const emptyAdmin = { title: '', category: '钢琴课', description: '', duration_min: 60, hours: 0, teacher_id: undefined, status: 1, sort: 0 };
+const emptyApply = { title: '', category: '钢琴课', description: '', duration_min: 60, hours: 0 };
 // 只回填 Form 中实际注册的字段，避免 setFieldsValue 传入未注册字段
-const FORM_KEYS = ['title', 'category', 'teacher_id', 'duration_min', 'description', 'status'];
+const FORM_KEYS = ['title', 'category', 'teacher_id', 'duration_min', 'hours', 'description', 'status'];
 const pickFormValues = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => FORM_KEYS.includes(k)));
 
 function StatusTag({ s }) {
@@ -57,8 +57,8 @@ export default function Courses({ user }) {
     setSaving(true);
     try {
       const body = isAdmin
-        ? { ...values, teacher_id: values.teacher_id || null, duration_min: Number(values.duration_min), status: Number(values.status), sort: Number(values.sort || 0) }
-        : { title: values.title, category: values.category, description: values.description, duration_min: Number(values.duration_min) };
+        ? { ...values, teacher_id: values.teacher_id || null, duration_min: Number(values.duration_min), hours: Number(values.hours || 0), status: Number(values.status), sort: Number(values.sort || 0) }
+        : { title: values.title, category: values.category, description: values.description, duration_min: Number(values.duration_min), hours: Number(values.hours || 0) };
       if (isAdmin) {
         if (editing.id) await api.updateCourse(editing.id, body);
         else await api.createCourse(body);
@@ -87,7 +87,8 @@ export default function Courses({ user }) {
     { title: '课程', dataIndex: 'title', key: 'title' },
     { title: '分类', dataIndex: 'category', key: 'category' },
     { title: '教师', dataIndex: 'teacher_name', key: 'teacher_name', render: (v) => v || '-' },
-    { title: '时长', dataIndex: 'duration_min', key: 'duration_min', render: (v) => `${v} 分钟` },
+    { title: '单次时长', dataIndex: 'duration_min', key: 'duration_min', render: (v) => `${v} 分钟` },
+    { title: '课程课时', dataIndex: 'hours', key: 'hours', render: (v) => `${Number(v || 0)} 小时` },
     { title: '状态', dataIndex: 'status', key: 'status', render: (s) => <StatusTag s={s} /> },
     ...(isAdmin ? [{
       title: '操作', key: 'action', render: (_, c) => (
@@ -177,8 +178,11 @@ export default function Courses({ user }) {
               <Select allowClear placeholder="未指定" options={teachers.map((t) => ({ value: t.id, label: t.name }))} />
             </Form.Item>
           )}
-          <Form.Item label="时长（分钟）" name="duration_min" rules={[{ required: true, message: '请输入时长' }]}>
+          <Form.Item label="单次时长（分钟）" name="duration_min" rules={[{ required: true, message: '请输入时长' }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="课程课时（小时）" name="hours" extra="学生报名该课程时的默认总课时；与学期无关，可在学生管理里单独调整">
+            <InputNumber min={0} step={0.5} precision={2} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item label="描述" name="description">
             <Input.TextArea rows={3} />

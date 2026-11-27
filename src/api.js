@@ -82,6 +82,20 @@ export const api = {
   listRecords: (q = {}) => request('/admin/records' + qs(q)),
   teacherRecords: (q = {}) => request('/teacher/records' + qs(q)),
 
+  // 学期（管理员创建，指定日期范围；学员端取当前学期标签）
+  semesters: () => request('/admin/semesters'),
+  publicSemesters: () => request('/semesters'),
+  currentSemester: () => request('/semesters/current'),
+  createSemester: (body) => request('/admin/semesters', { method: 'POST', body: JSON.stringify(body) }),
+  updateSemester: (id, body) => request(`/admin/semesters/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  setCurrentSemester: (id) => request(`/admin/semesters/${id}/current`, { method: 'POST' }),
+  deleteSemester: (id) => request(`/admin/semesters/${id}`, { method: 'DELETE' }),
+
+  // 学生课程课时台账（单位：小时）
+  courseHours: (q = {}) => request('/admin/course-hours' + qs(q)),
+  updateCourseHours: (memberId, courseId, body) =>
+    request(`/admin/course-hours/${memberId}/${courseId}`, { method: 'PUT', body: JSON.stringify(body) }),
+
   // 教师课程打卡
   checkinLessons: (q = {}) => request('/checkins/lessons' + qs(q)),
   doCheckin: (lessonId, note) => request('/checkins', { method: 'POST', body: JSON.stringify({ lessonId, note }) }),
