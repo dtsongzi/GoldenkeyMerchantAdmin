@@ -517,32 +517,6 @@ export default function Schedule({ user }) {
     } catch (e) { message.error('导出失败：' + e.message); }
   };
 
-  // ---------- 空壳课对账清理 ----------
-  const [orphan, setOrphan] = useState(null); // { loading, rows }
-  const openOrphans = async () => {
-    setOrphan({ loading: true, rows: [] });
-    try {
-      const rows = await api.lessonOrphans({ from: rangeFrom, to: rangeTo, teacherId: filter.teacherId });
-      setOrphan({ loading: false, rows: rows || [] });
-    } catch (e) {
-      setOrphan(null);
-      message.error('读取失败：' + e.message);
-    }
-  };
-  const cleanupOrphans = async () => {
-    const rows = orphan?.rows || [];
-    if (!rows.length) return;
-    setBusy(true);
-    try {
-      const r = await api.cleanupLessonOrphans(rows.map((x) => x.id));
-      message.success(`已清理 ${r.deleted || rows.length} 条空壳课，现在与小程序可约时段一致`);
-      setOrphan(null);
-      load();
-    } catch (e) {
-      message.error('清理失败：' + e.message);
-    } finally { setBusy(false); }
-  };
-
   // ---------- 教室管理 ----------
   const reloadRooms = () => api.classrooms().then(setClassrooms).catch(() => {});
   const addRoom = async () => {
@@ -670,7 +644,6 @@ export default function Schedule({ user }) {
           <Button type="primary" icon={<PlusOutlined />} loading={busy} onClick={applyQuick}>快捷排课</Button>
           <Button onClick={() => setRoomMgr(true)}>教室管理</Button>
           <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出课表</Button>
-          <Button onClick={openOrphans}>清理空壳课</Button>
           <span className="sc-quick-note">生成前自动预检教师 / 教室冲突，冲突可逐条跳过</span>
         </div>
       </div>
@@ -772,37 +745,6 @@ export default function Schedule({ user }) {
           onCancel={closeEditor} onSubmit={submitEditor}
           onDelete={handleDelete} onDeleteSeries={handleDeleteSeries} />
       )}
-
-      {/* 空壳课清理：网站自建、无学生、无系列、小程序里也没有对应可约时段 */}
-      <Modal open={!!orphan} title="清理空壳课" width={640}
-        okText={`清理 ${orphan?.rows?.length || 0} 条`} cancelText="取消"
-        okButtonProps={{ danger: true, disabled: !orphan?.rows?.length, loading: busy }}
-        onOk={cleanupOrphans} onCancel={() => setOrphan(null)}>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          下面是「网站自建、没有学生、不属于循环系列」的课，小程序「可约时段」里没有对应记录，
-          这就是两边数量对不上的原因。清理只删这些占位课，不会动小程序的可约时段和学员预约。
-        </Typography.Paragraph>
-        {orphan?.loading ? <div style={{ padding: 12 }}>读取中…</div>
-          : (orphan?.rows?.length ? (
-            <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 6 }}>
-              {orphan.rows.map((r) => (
-                <div key={r.id} style={{
-                  display: 'flex', gap: 10, padding: '8px 12px',
-                  borderBottom: '1px solid #f5f5f5', fontSize: 13,
-                }}>
-                  <span style={{ width: 96, color: '#555' }}>{r.slot_date}</span>
-                  <span style={{ width: 104, fontWeight: 600 }}>
-                    {String(r.start_time).slice(0, 5)}–{String(r.end_time).slice(0, 5)}
-                  </span>
-                  <span style={{ flex: 1, color: '#666' }}>
-                    {r.teacher_name || '未指定教师'} · {r.classroom_name || '未指定教室'}
-                  </span>
-                  <span style={{ color: '#999' }}>{r.title || '未命名'}</span>
-                </div>
-              ))}
-            </div>
-          ) : <div style={{ padding: 12, color: '#888' }}>没有需要清理的空壳课，两边已经一致。</div>)}
-      </Modal>
 
       {/* 批量排课冲突预检 */}
       <Modal open={!!batchPreview} title="批量排课冲突预检" width={620}

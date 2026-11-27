@@ -221,15 +221,6 @@ export default function LessonModal({
             optionFilterProp="label" maxTagCount="responsive" placeholder="搜索并选择学生"
             options={memberOptions} value={f.studentIds} disabled={readOnly}
             onChange={(v) => set({ studentIds: v })} />
-          {lesson?.origin_kind === 'booking' && (
-            <span className="sc-hint">
-              这节课是学员预约生成的：改学生 / 时间会同步回该学员的预约记录（第一位学生 = 预约学员），
-              不能清空；要取消请直接删除课程。
-            </span>
-          )}
-          {lesson?.origin_kind === 'availability' && (
-            <span className="sc-hint">这节课来自小程序「可约时段」，改时间 / 教室会同步回可约时段。</span>
-          )}
         </div>
 
         <div className="sc-form-item">

@@ -122,10 +122,6 @@ export const api = {
   deleteLessonSeries: (seriesId) =>
     request(`/admin/lessons/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' }),
   restoreLessons: (body) => request('/admin/lessons/restore', { method: 'POST', body: JSON.stringify(body) }),
-  // 空壳课（网站自建、无学生、无系列）：小程序里没有对应可约时段，用于对账清理
-  lessonOrphans: (query = {}) => request('/admin/lessons/orphans' + qs(query)),
-  cleanupLessonOrphans: (ids) =>
-    request('/admin/lessons/orphans/cleanup', { method: 'POST', body: JSON.stringify({ ids }) }),
   // 批量删除：复用 restore 的「空快照」语义（只给 ids、不传 lessons，事务内删除课程及学生关联）
   deleteLessons: (ids) => request('/admin/lessons/restore', {
     method: 'POST', body: JSON.stringify({ ids, lessons: [] }),
