@@ -35,6 +35,14 @@ export const LESSON_STATUS = [
   { value: 'suspended', label: '停课', color: '#b06a66' },
 ];
 
+// 课程重复规则：创建后按当前学期范围向后顺延（往前的日期不碰）
+export const REPEAT_OPTIONS = [
+  { value: 'none', label: '不重复' },
+  { value: 'weekly', label: '每周重复' },
+  { value: 'monthly', label: '每月重复' },
+];
+export const repeatLabel = (v) => REPEAT_OPTIONS.find((o) => o.value === v)?.label || '不重复';
+
 // 柔和低饱和莫兰迪色系，按教师稳定分配
 export const PALETTE = [
   { bg: '#e9e3d7', border: '#cbbfa5', text: '#5b5240' },

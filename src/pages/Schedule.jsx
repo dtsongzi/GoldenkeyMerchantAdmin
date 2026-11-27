@@ -10,7 +10,7 @@ import {
 import dayjs from 'dayjs';
 import { api, currentUser } from '../api.js';
 import {
-  DEFAULT_SETTINGS,
+  DEFAULT_SETTINGS, REPEAT_OPTIONS, repeatLabel,
   fmt, addDays, parseLocal, parseTime, toTimeStr, timeOverlap, hhmm,
   buildConflictMap, buildStudentHints, weekOf, conflictGroups, conflictDomains,
 } from '../schedule/utils.js';
@@ -24,13 +24,6 @@ const loadSettings = () => {
   catch { return { ...DEFAULT_SETTINGS }; }
 };
 const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
-// 课程模板的重复规则：新建课程后按当前学期日期范围向后顺延
-const REPEAT_OPTIONS = [
-  { value: 'none', label: '不重复' },
-  { value: 'weekly', label: '每周重复' },
-  { value: 'monthly', label: '每月重复' },
-];
-const repeatLabel = (v) => REPEAT_OPTIONS.find((o) => o.value === v)?.label || '不重复';
 
 export default function Schedule({ user }) {
   const { message, modal } = AntApp.useApp();
@@ -404,6 +397,7 @@ export default function Schedule({ user }) {
     defaultCourseId: template.courseId,
     defaultCourseTitle: courses.find((c) => c.id === template.courseId)?.title || '',
     defaultRemark: template.remark,
+    defaultRepeat: template.repeat,
     semesters,
     defaultSemesterId: activeSemesterId,
   }), [teachers, classrooms, courses, members, isAdmin, myTeacherId, settings, editor, viewMode, template, semesters, activeSemesterId]);
@@ -467,7 +461,7 @@ export default function Schedule({ user }) {
   };
 
   const submitEditor = async (form) => {
-    const { scope, ...body } = form;
+    const { scope, repeat, ...body } = form;
     if (!editor.lesson) {
       // 拖拽新建：弹窗期间冲突旧课已在画布上置灰预览（仅本人冲突可被替换）
       const candidate = { slot_date: body.slot_date, start_time: body.start_time, end_time: body.end_time,
@@ -481,7 +475,7 @@ export default function Schedule({ user }) {
         return;
       }
       const removeIds = self.map((l) => l.id);
-      const dates = repeatDatesAfter(body.slot_date, template.repeat);
+      const dates = repeatDatesAfter(body.slot_date, repeat);
       try {
         const r = await mutate(
           removeIds.length ? `新建课程（替换 ${removeIds.length} 节本人冲突课）` : '新建课程',
@@ -501,7 +495,7 @@ export default function Schedule({ user }) {
         message.success(
           `课程已创建${removeIds.length ? `，已移除 ${removeIds.length} 节本人冲突课程` : ''}` +
           (repeated?.created
-            ? `；按${repeatLabel(template.repeat)}向后排 ${repeated.created} 节（覆盖 ${repeated.replaced} 节，跳过 ${repeated.skipped} 节教室冲突）`
+            ? `；按${repeatLabel(repeat)}向后排 ${repeated.created} 节（覆盖 ${repeated.replaced} 节，跳过 ${repeated.skipped} 节教室冲突）`
             : '')
         );
       } catch { /* mutate 已提示 */ }

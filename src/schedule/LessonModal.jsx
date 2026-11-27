@@ -3,7 +3,7 @@ import {
   Modal, Select, Input, DatePicker, TimePicker, Radio, Button, Space, Typography, Popconfirm,
 } from 'antd';
 import dayjs from 'dayjs';
-import { LESSON_STATUS, hhmm, parseTime, toTimeStr, snapHour, weekOf } from './utils.js';
+import { LESSON_STATUS, REPEAT_OPTIONS, repeatLabel, hhmm, parseTime, toTimeStr, snapHour, weekOf } from './utils.js';
 
 const { TextArea } = Input;
 
@@ -31,6 +31,7 @@ function initialForm(lesson, initial, meta) {
       lesson_status: lesson.lesson_status || 'normal',
       scope: 'single',
       semester_id: lesson.semester_id ?? undefined,
+      repeat: 'none',
     };
   }
   const s = initial?.start ?? 9;
@@ -44,11 +45,12 @@ function initialForm(lesson, initial, meta) {
     start: s,
     end: Math.min(meta.settings?.endHour ?? 21, s + (initial?.end && initial.end > s ? initial.end - s : 1)),
     remark: meta.defaultRemark || '',
-    lesson_status: 'normal',
-    scope: 'single',
-    semester_id: meta.defaultSemesterId ?? initial?.semesterId ?? undefined,
-  };
-}
+      lesson_status: 'normal',
+      scope: 'single',
+      semester_id: meta.defaultSemesterId ?? initial?.semesterId ?? undefined,
+      repeat: meta.defaultRepeat || 'none',
+    };
+  }
 
 export default function LessonModal({
   open, lesson, initial, meta, seriesCount = 0, busy, replaceCount = 0, draftClash, onFormChange,
@@ -96,6 +98,7 @@ export default function LessonModal({
       lesson_status: f.lesson_status,
       scope: f.scope,
       semester_id: f.semester_id ?? null,
+      repeat: f.repeat,
     });
   };
 
@@ -228,6 +231,16 @@ export default function LessonModal({
           <Select style={{ width: '100%' }} placeholder="选择学期" options={(meta.semesters || []).map((s) => ({ value: s.id, label: s.name }))}
             value={f.semester_id} disabled={readOnly} onChange={(v) => set({ semester_id: v })} />
         </div>
+        {!lesson && (
+          <div className="sc-form-item">
+            <label>重复</label>
+            <Select style={{ width: '100%' }} options={REPEAT_OPTIONS} value={f.repeat}
+              disabled={readOnly} onChange={(v) => set({ repeat: v })} />
+            {f.repeat !== 'none' && (
+              <span className="sc-hint">创建后按学期范围向后顺延，不改动之前的日期</span>
+            )}
+          </div>
+        )}
         <div className="sc-form-item">
           <label>上课日期</label>
           <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" value={f.slot_date ? dayjs(f.slot_date) : null}
@@ -271,6 +284,8 @@ export default function LessonModal({
         <div className="sc-form-summary">
           {f.slot_date} {weekOf(f.slot_date)} · {hhmm(f.start)}–{hhmm(f.end)}
           {applySeries ? ' · 将同步到整个系列' : ''}
+          {!lesson && f.repeat && f.repeat !== 'none'
+            ? ` · ${repeatLabel(f.repeat)}至学期结束` : ''}
         </div>
       )}
       {err && <div className="sc-form-error">{err}</div>}
