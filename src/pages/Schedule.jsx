@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Button, Select, Checkbox, Space, Tag, Typography, Modal, TimePicker, Input,
+  Button, Select, Space, Tag, Typography, Modal, Input,
   DatePicker, Segmented, Switch, InputNumber, Empty, App as AntApp, Tooltip,
 } from 'antd';
 import {
   LeftOutlined, RightOutlined, EditOutlined, CheckOutlined, CloseOutlined,
-  DownloadOutlined, PrinterOutlined, SettingOutlined, PlusOutlined,
+  DownloadOutlined, PrinterOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api, currentUser } from '../api.js';
 import {
-  DEFAULT_SETTINGS, WEEK_OPTIONS, ALL_WEEK, LESSON_STATUS,
+  DEFAULT_SETTINGS,
   fmt, addDays, parseLocal, parseTime, toTimeStr, timeOverlap, hhmm,
   buildConflictMap, buildStudentHints, weekOf, conflictGroups, conflictDomains,
 } from '../schedule/utils.js';
@@ -23,10 +23,7 @@ const loadSettings = () => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }; }
   catch { return { ...DEFAULT_SETTINGS }; }
 };
-const toDayjs = (v) => dayjs().hour(Math.floor(v)).minute(Math.round((v - Math.floor(v)) * 60)).second(0).millisecond(0);
 const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
-// 多选下拉用完整「周X」标签，比单字更清晰
-const WEEK_SELECT_OPTIONS = WEEK_OPTIONS.map((d) => ({ value: d.value, label: `周${d.label}` }));
 // 课程模板的重复规则：新建课程后按当前学期日期范围向后顺延
 const REPEAT_OPTIONS = [
   { value: 'none', label: '不重复' },
@@ -74,25 +71,10 @@ export default function Schedule({ user }) {
     if (!activeSem || !s) return s;
     return s < activeSem.start_date ? activeSem.start_date : (s > activeSem.end_date ? activeSem.end_date : s);
   };
-  const [quick, setQuick] = useState({
-    teacherId: undefined,
-    courseId: undefined,
-    roomIds: [],
-    startDate: fmt(today),
-    endDate: fmt(addDays(today, 14)),
-    weekdays: ALL_WEEK,
-    startHour: '09:00',
-    endHour: '10:00',
-    studentIds: [],
-    remark: '',
-    status: 'normal',
-  });
-
   const [editor, setEditor] = useState(null);
   const [editorKey, setEditorKey] = useState(0);
   // 拖拽新建的草稿：弹窗期间在画布上画轮廓，并置灰「保存后会被替换」的冲突课
   const [pendingNew, setPendingNew] = useState(null);
-  const [batchPreview, setBatchPreview] = useState(null);
   const [conflictModal, setConflictModal] = useState(false);
   const [settingsModal, setSettingsModal] = useState(false);
   const [ctx, setCtx] = useState(null);
@@ -160,19 +142,6 @@ export default function Schedule({ user }) {
   }, [isAdmin]);
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [rangeFrom, rangeTo]);
 
-  // 表单默认值
-  useEffect(() => {
-    if (!classrooms.length) return;
-    setQuick((q) => (q.roomIds.length ? q : { ...q, roomIds: [classrooms[0].id] }));
-  }, [classrooms]);
-  useEffect(() => {
-    if (!courses.length) return;
-    setQuick((q) => (q.courseId ? q : { ...q, courseId: courses[0].id }));
-  }, [courses]);
-  useEffect(() => {
-    if (!teachers.length) return;
-    setQuick((q) => (q.teacherId ? q : { ...q, teacherId: isAdmin ? teachers[0].id : myTeacherId }));
-  }, [teachers, isAdmin, myTeacherId]);
   // 模板默认值：教师账号固定本人，管理员取第一位；课程/教室取第一项
   useEffect(() => {
     setTemplate((t) => ({
@@ -182,17 +151,6 @@ export default function Schedule({ user }) {
       classroomId: t.classroomId || classrooms[0]?.id || undefined,
     }));
   }, [teachers, courses, classrooms, isAdmin, myTeacherId]);
-  // 选中学期后：批量排课的起止日期收敛到该学期范围内（不跨学期）
-  useEffect(() => {
-    const s = semesters.find((x) => String(x.id) === String(activeSemesterId));
-    setQuick((q) => {
-      if (!s) return { ...q, semesterId: undefined };
-      const startDate = q.startDate < s.start_date ? s.start_date : (q.startDate > s.end_date ? s.start_date : q.startDate);
-      let endDate = q.endDate > s.end_date ? s.end_date : q.endDate;
-      if (endDate < startDate) endDate = startDate;
-      return { ...q, semesterId: s.id, startDate, endDate };
-    });
-  }, [activeSemesterId, semesters]);
 
   // 切换学期：日期锚点收敛到新学期；若正在编辑则先退出（避免跨学期遗留草稿）
   useEffect(() => {
@@ -575,61 +533,6 @@ export default function Schedule({ user }) {
     await mutate('复制课程', () => api.duplicateLesson(lesson.id)).catch(() => {});
   };
 
-  // ---------- 批量循环排课 ----------
-  const batchPayload = () => {
-    const tid = isAdmin ? quick.teacherId : myTeacherId;
-    return {
-      teacherId: tid,
-      courseId: quick.courseId,
-      title: courses.find((c) => c.id === quick.courseId)?.title || '',
-      classroomIds: quick.roomIds,
-      semesterId: activeSemesterId,
-      startDate: quick.startDate,
-      endDate: quick.endDate,
-      weekdays: quick.weekdays,
-      startHour: quick.startHour,
-      endHour: quick.endHour,
-      studentIds: quick.studentIds,
-      remark: quick.remark,
-      lesson_status: quick.status,
-    };
-  };
-  const doBatch = async (payload, skipConflicts) => {
-    setBatchPreview(null);
-    const res = await mutate('批量循环排课',
-      () => api.batchLessons({ ...payload, previewOnly: false, skipConflicts }));
-    message.success(`已生成 ${res.created?.length || 0} 节课${res.skipped ? `，跳过 ${res.skipped} 节冲突课` : ''}`);
-    if (res.created?.length) setSelectedDate(payload.startDate);
-  };
-  const applyQuick = async () => {
-    if (!editing) { message.warning('请先点击右上角「编辑课表」'); return; }
-    const p = batchPayload();
-    if (!p.teacherId) return message.warning('请选择上课教师');
-    if (!p.courseId) return message.warning('请选择课程');
-    if (!p.classroomIds.length) return message.warning('请至少选择一间教室');
-    if (!p.weekdays.length) return message.warning('请至少选择一个重复星期');
-    // 已创建学期时必须选学期且日期不越界；未创建学期时沿用旧行为（服务端同样放行）
-    if (semesters.length && !p.semesterId) return message.warning('请选择学期（排课须落在单个学期范围内）');
-    if (!p.startDate || !p.endDate) return message.warning('请选择起止日期');
-    const sem = semesters.find((s) => String(s.id) === String(p.semesterId));
-    if (sem && (p.startDate < sem.start_date || p.endDate > sem.end_date)) {
-      return message.warning(`起止日期须在学期范围内（${sem.start_date} ~ ${sem.end_date}）`);
-    }
-    if (p.startDate > p.endDate) return message.warning('结束日期不能早于开始日期');
-    if (parseTime(p.endHour) <= parseTime(p.startHour)) return message.warning('时段结束时间需晚于起始时间');
-    if (parseTime(p.startHour) < settings.startHour || parseTime(p.endHour) > settings.endHour) {
-      return message.warning(`时段需在 ${settings.startHour}:00–${settings.endHour}:00 之间`);
-    }
-    setBusy(true);
-    try {
-      const preview = await api.batchLessons({ ...p, previewOnly: true });
-      if (!preview.planned) return message.info('当前条件下没有可生成的课程');
-      if (preview.conflicts?.length) { setBatchPreview({ payload: p, preview }); return; }
-      await doBatch(p, false);
-    } catch (e) { message.error('批量排课失败：' + e.message); }
-    finally { setBusy(false); }
-  };
-
   // ---------- 导航 / 视图 / 导出 / 打印 ----------
   const shift = (n) => {
     const from = clampToSem(windowStart);
@@ -664,8 +567,6 @@ export default function Schedule({ user }) {
   const roomOptions = classrooms.filter((r) => r.status !== 0).map((r) => ({ value: r.id, label: r.name }));
   const courseOptions = courses.map((c) => ({ value: c.id, label: `${c.title}${c.duration_min ? ` · ${c.duration_min}min` : ''}` }));
   const memberOptions = members.map((m) => ({ value: m.id, label: m.name }));
-  const allWeek = quick.weekdays.length === 7;
-  const someWeek = quick.weekdays.length > 0 && !allWeek;
   const hourOptions = Array.from({ length: 25 }, (_, h) => ({ value: h, label: `${String(h).padStart(2, '0')}:00` }));
 
   return (
@@ -702,97 +603,7 @@ export default function Schedule({ user }) {
         )) : <span className="sc-sem-empty">请先在「学期管理」创建学期</span>}
       </div>
 
-      {/* 区域 A：只读态为批量循环排课；编辑态切换为课程模板预设 */}
-      {!editing && (
-        <div className="sc-quick sc-noprint">
-          <div className="sc-quick-title"><b>批量循环排课</b><span>按日期范围 + 重复星期 + 固定时段生成系列课，多教室按顺序循环分配</span></div>
-          <div className="sc-quick-fields">
-            {isAdmin && (
-              <div className="sc-qf"><label>上课教师</label>
-                <Select placeholder="选择教师" options={teacherOptions} value={quick.teacherId}
-                  onChange={(v) => setQuick({ ...quick, teacherId: v })} />
-              </div>
-            )}
-            {!isAdmin && (
-              <div className="sc-qf"><label>上课教师</label>
-                <Input disabled value={teachers.find((t) => t.id === myTeacherId)?.name || '本人'} title="教师账号只能排自己的课程" />
-              </div>
-            )}
-            <div className="sc-qf"><label>课程</label>
-              <Select placeholder="选择课程" options={courseOptions} value={quick.courseId}
-                onChange={(v) => setQuick({ ...quick, courseId: v })} />
-            </div>
-            <div className="sc-qf wide"><label>教室（多选 · 循环分配）</label>
-              <Select mode="multiple" allowClear placeholder="选择教室" options={roomOptions} value={quick.roomIds}
-                onChange={(v) => setQuick({ ...quick, roomIds: v })} />
-            </div>
-            <div className="sc-qf"><label>开始日期</label>
-              <DatePicker style={{ width: '100%' }} value={quick.startDate ? dayjs(quick.startDate) : null}
-                disabledDate={(d) => activeSem ? (d && d.format('YYYY-MM-DD') < activeSem.start_date) || (d && d.format('YYYY-MM-DD') > activeSem.end_date) || (quick.endDate && d && d.format('YYYY-MM-DD') > quick.endDate) : false}
-                onChange={(d) => setQuick({ ...quick, startDate: d ? d.format('YYYY-MM-DD') : '' })} />
-            </div>
-            <div className="sc-qf"><label>结束日期</label>
-              <DatePicker style={{ width: '100%' }} value={quick.endDate ? dayjs(quick.endDate) : null}
-                disabledDate={(d) => activeSem ? (d && d.format('YYYY-MM-DD') < activeSem.start_date) || (d && d.format('YYYY-MM-DD') > activeSem.end_date) || (quick.startDate && d && d.format('YYYY-MM-DD') < quick.startDate) : false}
-                onChange={(d) => setQuick({ ...quick, endDate: d ? d.format('YYYY-MM-DD') : '' })} />
-            </div>
-            <div className="sc-qf wide"><label>每周重复星期（多选）</label>
-              <Select mode="multiple" style={{ width: '100%' }} placeholder="选择重复星期"
-                maxTagCount="responsive" options={WEEK_SELECT_OPTIONS} value={quick.weekdays}
-                onChange={(v) => setQuick({ ...quick, weekdays: v })}
-                popupRender={(menu) => (
-                  <>
-                    <div className="sc-week-select-all" onMouseDown={(e) => e.preventDefault()}>
-                      <Checkbox indeterminate={someWeek} checked={allWeek}
-                        onChange={(e) => setQuick({ ...quick, weekdays: e.target.checked ? ALL_WEEK : [] })}>
-                        全选（每天）
-                      </Checkbox>
-                      <span className="sc-week-count">{quick.weekdays.length}/7 天</span>
-                    </div>
-                    {menu}
-                  </>
-                )} />
-            </div>
-            <div className="sc-qf"><label>时段起始</label>
-              <TimePicker style={{ width: '100%' }} format="HH:mm" needConfirm={false} minuteStep={30}
-                value={quick.startHour ? toDayjs(parseTime(quick.startHour)) : null}
-                disabledTime={() => ({ disabledHours: () => [
-                  ...Array.from({ length: settings.startHour }, (_, i) => i),
-                  ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
-                ] })}
-                onChange={(d) => setQuick({ ...quick, startHour: d ? d.format('HH:mm') : '09:00' })} />
-            </div>
-            <div className="sc-qf"><label>时段结束</label>
-              <TimePicker style={{ width: '100%' }} format="HH:mm" needConfirm={false} minuteStep={30}
-                value={quick.endHour ? toDayjs(parseTime(quick.endHour)) : null}
-                disabledTime={() => ({ disabledHours: () => [
-                  ...Array.from({ length: settings.startHour }, (_, i) => i),
-                  ...Array.from({ length: 24 - settings.endHour }, (_, i) => settings.endHour + i),
-                ] })}
-                onChange={(d) => setQuick({ ...quick, endHour: d ? d.format('HH:mm') : '10:00' })} />
-            </div>
-            <div className="sc-qf wide"><label>上课学生（可选）</label>
-              <Select mode="multiple" allowClear showSearch optionFilterProp="label" maxTagCount="responsive"
-                placeholder="搜索并选择学生" options={memberOptions} value={quick.studentIds}
-                onChange={(v) => setQuick({ ...quick, studentIds: v })} />
-            </div>
-            <div className="sc-qf"><label>备注（可选）</label>
-              <Input placeholder="如：带教材" value={quick.remark}
-                onChange={(e) => setQuick({ ...quick, remark: e.target.value })} />
-            </div>
-            <div className="sc-qf"><label>课程状态</label>
-              <Select options={LESSON_STATUS.map((s) => ({ value: s.value, label: s.label }))}
-                value={quick.status} onChange={(v) => setQuick({ ...quick, status: v })} />
-            </div>
-          </div>
-          <div className="sc-quick-actions">
-            <Button type="primary" icon={<PlusOutlined />} loading={busy} onClick={applyQuick}>快捷排课</Button>
-            <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出课表</Button>
-            <span className="sc-quick-note">生成前自动预检教师 / 教室冲突，冲突可逐条跳过</span>
-          </div>
-        </div>
-      )}
-
+      {/* 课程模板预设：仅编辑态展示 */}
       {editing && (
         <div className="sc-quick sc-template sc-noprint">
           <div className="sc-quick-title"><b>课程模板预设</b><span>新建课程时自动带入；重复规则仅在创建后按学期范围向后排课，不改动之前的日期</span></div>
@@ -937,33 +748,6 @@ export default function Schedule({ user }) {
           onCancel={closeEditor} onSubmit={submitEditor}
           onDelete={handleDelete} onDeleteSeries={handleDeleteSeries} />
       )}
-
-      {/* 批量排课冲突预检 */}
-      <Modal open={!!batchPreview} title="批量排课冲突预检" width={620}
-        okText="生成（按规则处理冲突）" cancelText="取消本次批量排课"
-        okButtonProps={{ danger: true, loading: busy }}
-        onOk={() => doBatch(batchPreview.payload, true).catch(() => {})}
-        onCancel={() => setBatchPreview(null)}>
-        {batchPreview && (
-          <>
-            <p>计划生成 <b>{batchPreview.preview.planned}</b> 节课，其中 <b>{new Set(batchPreview.preview.conflicts.map((c) => c.index)).size}</b> 节与已有课程冲突：</p>
-            <div className="sc-conflict-table">
-              {batchPreview.preview.conflicts.slice(0, 30).map((c, i) => {
-                const isSelf = String(c.withTeacherId) === String(c.candidateTeacherId);
-                return (
-                  <div key={i} className="sc-conflict-row">
-                    <b>{c.date} {c.week}</b><span>{c.time}</span>
-                    <Tag color={isSelf ? 'green' : 'orange'}>{isSelf ? '本人·可替换' : '教室被占'}</Tag>
-                    <span>{c.detail}</span>
-                  </div>
-                );
-              })}
-              {batchPreview.preview.conflicts.length > 30 && <div className="sc-hint">… 另有 {batchPreview.preview.conflicts.length - 30} 条</div>}
-            </div>
-            <p className="sc-hint">「生成」会跳过教室被占用的节，并自动替换同一教师时段重叠的旧课；「取消」不写入任何数据。</p>
-          </>
-        )}
-      </Modal>
 
       {/* 冲突汇总明细：按「冲突域」列出（同教师/同教室 + 同时段 = 一处） */}
       <Modal open={conflictModal} title="当前视图冲突明细（按教师 / 教室 + 时段合并）" width={680} footer={null}

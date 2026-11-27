@@ -115,7 +115,6 @@ export const api = {
   updateLesson: (id, body) => request(`/admin/lessons/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteLesson: (id) => request(`/admin/lessons/${id}`, { method: 'DELETE' }),
   duplicateLesson: (id) => request(`/admin/lessons/${id}/duplicate`, { method: 'POST' }),
-  batchLessons: (body) => request('/admin/lessons/batch', { method: 'POST', body: JSON.stringify(body) }),
   lessonConflicts: (body) => request('/admin/lessons/conflicts', { method: 'POST', body: JSON.stringify(body) }),
   updateLessonSeries: (seriesId, body) =>
     request(`/admin/lessons/series/${encodeURIComponent(seriesId)}`, { method: 'PUT', body: JSON.stringify(body) }),
